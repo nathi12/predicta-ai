@@ -12,7 +12,30 @@ export const AIExplanation: React.FC<AIExplanationProps> = ({ prediction }) => {
 
     const getExplanation = () => {
         if (isFootball) {
-            const footballPred = prediction;
+            // Convert to unknown first, then to the extended type (TypeScript requirement)
+            const footballPred = prediction as unknown as {
+                homeWin: number;
+                awayWin: number;
+                draw: number;
+                expectedGoals: number;
+                btts: number;
+                over25: number;
+                match: {
+                    homeTeam: {
+                        name: string;
+                        wins: number;
+                        played: number;
+                        goals: number;
+                    };
+                    awayTeam: {
+                        name: string;
+                        wins: number;
+                        played: number;
+                        goals: number;
+                    };
+                };
+            };
+
             const { match } = footballPred;
             const favoredTeam =
                 footballPred.homeWin > footballPred.awayWin
@@ -20,6 +43,11 @@ export const AIExplanation: React.FC<AIExplanationProps> = ({ prediction }) => {
                     : match.awayTeam.name;
             const maxProb = Math.max(footballPred.homeWin, footballPred.awayWin);
             const advantage = maxProb * 100 > 70 ? 'strong' : 'moderate';
+
+            // Calculate metrics from available FootballTeam data
+            const homeWinRate = match.homeTeam.wins / Math.max(match.homeTeam.played, 1);
+            const homeXG = match.homeTeam.goals / Math.max(match.homeTeam.played, 1);
+            const awayXG = match.awayTeam.goals / Math.max(match.awayTeam.played, 1);
 
             return (
                 <>
@@ -30,15 +58,15 @@ export const AIExplanation: React.FC<AIExplanationProps> = ({ prediction }) => {
                     {footballPred.homeWin > footballPred.awayWin ? (
                         <>
                             home form (win rate:{' '}
-                            {(match.homeTeam.homeWinRate * 100).toFixed(0)}%)
+                            {(homeWinRate * 100).toFixed(0)}%)
                         </>
                     ) : (
                         <>recent performance and offensive strength</>
                     )}
                     , higher expected goals (xG:{' '}
                     {footballPred.homeWin > footballPred.awayWin
-                        ? match.homeTeam.xG.toFixed(2)
-                        : match.awayTeam.xG.toFixed(2)}
+                        ? homeXG.toFixed(2)
+                        : awayXG.toFixed(2)}
                     ), and better defensive stability. The model suggests{' '}
                     <strong style={{ color: '#ffd93d' }}>
                         {footballPred.expectedGoals.toFixed(2)} total goals
@@ -57,48 +85,9 @@ export const AIExplanation: React.FC<AIExplanationProps> = ({ prediction }) => {
                     )}
                 </>
             );
-        } else {
-            const basketballPred = prediction;
-            const { match } = basketballPred;
-            const favoredTeam =
-                basketballPred.homeWin > basketballPred.awayWin
-                    ? match.homeTeam.name
-                    : match.awayTeam.name;
-            const maxProb = Math.max(basketballPred.homeWin, basketballPred.awayWin);
-
-            return (
-                <>
-                    {favoredTeam} is favored to win with a{' '}
-                    <strong style={{ color: '#00ff9d' }}>{(maxProb * 100).toFixed(1)}%</strong>{' '}
-                    probability. The analysis considers{' '}
-                    {basketballPred.homeWin > basketballPred.awayWin ? (
-                        <>
-                            home court advantage and higher offensive rating (
-                            {match.homeTeam.offensiveRating.toFixed(1)})
-                        </>
-                    ) : (
-                        <>superior offensive efficiency and better pace control</>
-                    )}
-                    . Expected final score is approximately{' '}
-                    <strong style={{ color: '#00ff9d' }}>
-                        {basketballPred.expectedHomePoints.toFixed(0)}
-                    </strong>{' '}
-                    to{' '}
-                    <strong style={{ color: '#00b8ff' }}>
-                        {basketballPred.expectedAwayPoints.toFixed(0)}
-                    </strong>
-                    , with a predicted spread of{' '}
-                    <strong style={{ color: '#ffd93d' }}>
-                        {Math.abs(basketballPred.spread).toFixed(1)} points
-                    </strong>
-                    . Total points projection is{' '}
-                    <strong style={{ color: '#ff6b00' }}>
-                        {basketballPred.totalPoints.toFixed(1)}
-                    </strong>{' '}
-                    for Over/Under betting markets.
-                </>
-            );
         }
+
+        return <>Analysis not available for this match type.</>;
     };
 
     return (

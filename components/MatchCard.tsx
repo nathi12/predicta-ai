@@ -9,6 +9,9 @@ interface MatchCardProps {
 }
 
 export const MatchCard: React.FC<MatchCardProps> = ({ match, index, onAnalyze }) => {
+    // Cast to access all properties including potentially missing ones
+    const matchData = match as Match & { time?: string };
+
     return (
         <div
             className="match-card card-hover animate-fade-in"
@@ -30,7 +33,7 @@ export const MatchCard: React.FC<MatchCardProps> = ({ match, index, onAnalyze })
                     {match.sport}
                 </span>
                 <span style={{ fontSize: '12px', color: '#888' }}>
-                    {match.date} • {match.time}
+                    {match.date}{matchData.time ? ` • ${matchData.time}` : ''}
                 </span>
             </div>
 

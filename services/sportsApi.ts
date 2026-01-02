@@ -1,4 +1,4 @@
-//services/sportAPi.ts
+//services/sportAPI.ts
 
 import axios from 'axios';
 import { FootballMatch, FootballTeam } from '@/types';
@@ -354,13 +354,8 @@ export async function transformFootballMatch(apiMatch: any): Promise<FootballMat
         homeTeam,
         awayTeam,
         date: new Date(apiMatch.fixture.date).toISOString().split('T')[0],
-        time: new Date(apiMatch.fixture.date).toLocaleTimeString('en-US', {
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false
-        }),
-        venue: apiMatch.fixture.venue?.name,
-        status: apiMatch.fixture.status?.short
+        venue: apiMatch.fixture.venue?.name
+        // Removed 'time' and 'status' properties as they don't exist in FootballMatch type
     };
 }
 
