@@ -13,6 +13,7 @@ export default function SportsAnalyticsPlatform() {
   const { matches: allMatches, loading, error } = useUpcomingMatches();
 
   const [filterLeague, setFilterLeague] = useState<string>('all');
+  const [sortBy, setSortBy] = useState<string>('date'); // date, confidence, over15, over25, over35, btts, corners65, corners85, corners105
   const [matchPredictions, setMatchPredictions] = useState<Map<string, Prediction>>(new Map());
   const [bettingMarkets, setBettingMarkets] = useState<Map<string, BettingMarkets>>(new Map());
 
@@ -66,6 +67,41 @@ export default function SportsAnalyticsPlatform() {
     setBettingMarkets(markets);
   }, [filteredMatches]);
 
+  // Sort matches based on selected criteria
+  const sortedMatches = useMemo(() => {
+    const matchesWithData = filteredMatches.map(match => ({
+      match,
+      prediction: matchPredictions.get(match.id),
+      markets: bettingMarkets.get(match.id)
+    }));
+
+    return matchesWithData.sort((a, b) => {
+      if (!a.prediction || !a.markets || !b.prediction || !b.markets) return 0;
+
+      switch (sortBy) {
+        case 'confidence':
+          return b.prediction.confidence - a.prediction.confidence;
+        case 'over15':
+          return b.markets.over15Goals.probability - a.markets.over15Goals.probability;
+        case 'over25':
+          return b.markets.over25Goals.probability - a.markets.over25Goals.probability;
+        case 'over35':
+          return b.markets.over35Goals.probability - a.markets.over35Goals.probability;
+        case 'btts':
+          return b.markets.btts.probability - a.markets.btts.probability;
+        case 'corners65':
+          return b.markets.corners.over65.probability - a.markets.corners.over65.probability;
+        case 'corners85':
+          return b.markets.corners.over85.probability - a.markets.corners.over85.probability;
+        case 'corners105':
+          return b.markets.corners.over105.probability - a.markets.corners.over105.probability;
+        case 'date':
+        default:
+          return new Date(a.match.date).getTime() - new Date(b.match.date).getTime();
+      }
+    }).map(item => item.match);
+  }, [filteredMatches, matchPredictions, bettingMarkets, sortBy]);
+
   return (
     <div
       style={{
@@ -98,12 +134,126 @@ export default function SportsAnalyticsPlatform() {
           </div>
         )}
 
-        {/* League Filter */}
-        <Filters
-          filterLeague={filterLeague}
-          leagues={leagues}
-          onLeagueChange={setFilterLeague}
-        />
+        {/* Filters Section */}
+        <div style={{ marginBottom: '24px' }}>
+          <Filters
+            filterLeague={filterLeague}
+            leagues={leagues}
+            onLeagueChange={setFilterLeague}
+          />
+
+          {/* Sort By Filter */}
+          <div
+            style={{
+              marginTop: '16px',
+              background: 'rgba(30, 41, 59, 0.4)',
+              border: '1px solid rgba(96, 165, 250, 0.2)',
+              borderRadius: '12px',
+              padding: '20px'
+            }}
+          >
+            <div
+              style={{
+                fontSize: '11px',
+                color: '#9ca3af',
+                textTransform: 'uppercase',
+                letterSpacing: '1px',
+                marginBottom: '12px',
+                fontWeight: 600
+              }}
+            >
+              📊 Sort Matches By
+            </div>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+                gap: '10px'
+              }}
+            >
+              {[
+                { value: 'date', label: '📅 Date', icon: '📅' },
+                { value: 'confidence', label: '🎯 Confidence', icon: '🎯' },
+                { value: 'over15', label: '⚽ Over 1.5', icon: '⚽' },
+                { value: 'over25', label: '⚽⚽ Over 2.5', icon: '⚽' },
+                { value: 'over35', label: '⚽⚽⚽ Over 3.5', icon: '⚽' },
+                { value: 'btts', label: '🥅 BTTS', icon: '🥅' },
+                { value: 'corners65', label: '🚩 Over 6.5', icon: '🚩' },
+                { value: 'corners85', label: '🚩🚩 Over 8.5', icon: '🚩' },
+                { value: 'corners105', label: '🚩🚩🚩 Over 10.5', icon: '🚩' }
+              ].map(option => (
+                <button
+                  key={option.value}
+                  onClick={() => setSortBy(option.value)}
+                  style={{
+                    padding: '10px 14px',
+                    background: sortBy === option.value
+                      ? 'linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%)'
+                      : 'rgba(96, 165, 250, 0.1)',
+                    border: sortBy === option.value
+                      ? '1px solid rgba(96, 165, 250, 0.5)'
+                      : '1px solid rgba(96, 165, 250, 0.2)',
+                    borderRadius: '8px',
+                    color: sortBy === option.value ? '#fff' : '#9ca3af',
+                    fontSize: '11px',
+                    fontWeight: sortBy === option.value ? 600 : 400,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    textAlign: 'center',
+                    fontFamily: 'inherit'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (sortBy !== option.value) {
+                      e.currentTarget.style.background = 'rgba(96, 165, 250, 0.15)';
+                      e.currentTarget.style.color = '#e8eaed';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (sortBy !== option.value) {
+                      e.currentTarget.style.background = 'rgba(96, 165, 250, 0.1)';
+                      e.currentTarget.style.color = '#9ca3af';
+                    }
+                  }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Active Sort Indicator */}
+            {sortBy !== 'date' && (
+              <div
+                style={{
+                  marginTop: '12px',
+                  padding: '8px 12px',
+                  background: 'rgba(34, 197, 94, 0.1)',
+                  border: '1px solid rgba(34, 197, 94, 0.2)',
+                  borderRadius: '6px',
+                  fontSize: '11px',
+                  color: '#4ade80',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}
+              >
+                <span>✓</span>
+                <span>
+                  Matches sorted by{' '}
+                  <strong style={{ fontWeight: 600 }}>
+                    {sortBy === 'confidence' && 'Highest Confidence'}
+                    {sortBy === 'over15' && 'Highest Over 1.5 Goals Probability'}
+                    {sortBy === 'over25' && 'Highest Over 2.5 Goals Probability'}
+                    {sortBy === 'over35' && 'Highest Over 3.5 Goals Probability'}
+                    {sortBy === 'btts' && 'Highest BTTS Probability'}
+                    {sortBy === 'corners65' && 'Highest Over 6.5 Corners Probability'}
+                    {sortBy === 'corners85' && 'Highest Over 8.5 Corners Probability'}
+                    {sortBy === 'corners105' && 'Highest Over 10.5 Corners Probability'}
+                  </strong>
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
 
         {/* Loading State */}
         {loading && (
@@ -143,7 +293,7 @@ export default function SportsAnalyticsPlatform() {
               marginBottom: '32px'
             }}
           >
-            {filteredMatches.length === 0 ? (
+            {sortedMatches.length === 0 ? (
               <div
                 style={{
                   gridColumn: '1 / -1',
@@ -160,7 +310,7 @@ export default function SportsAnalyticsPlatform() {
                 </p>
               </div>
             ) : (
-              filteredMatches.map((match, idx) => {
+              sortedMatches.map((match, idx) => {
                 const prediction = matchPredictions.get(match.id);
                 const markets = bettingMarkets.get(match.id);
 
@@ -174,9 +324,35 @@ export default function SportsAnalyticsPlatform() {
                       padding: '24px',
                       boxShadow: '0 4px 24px rgba(0, 0, 0, 0.4)',
                       transition: 'all 0.3s ease',
-                      animation: `fadeInUp 0.5s ease ${idx * 0.1}s backwards`
+                      animation: `fadeInUp 0.5s ease ${idx * 0.1}s backwards`,
+                      position: 'relative'
                     }}
                   >
+                    {/* Ranking Badge */}
+                    {sortBy !== 'date' && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: '12px',
+                          right: '12px',
+                          background: idx < 3
+                            ? 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)'
+                            : 'rgba(96, 165, 250, 0.2)',
+                          color: idx < 3 ? '#fff' : '#60a5fa',
+                          padding: '6px 12px',
+                          borderRadius: '8px',
+                          fontSize: '12px',
+                          fontWeight: 700,
+                          border: idx < 3
+                            ? '1px solid rgba(251, 191, 36, 0.5)'
+                            : '1px solid rgba(96, 165, 250, 0.3)',
+                          boxShadow: idx < 3 ? '0 2px 8px rgba(251, 191, 36, 0.3)' : 'none'
+                        }}
+                      >
+                        #{idx + 1}
+                      </div>
+                    )}
+
                     {/* Match Header */}
                     <div style={{ marginBottom: '20px' }}>
                       <div
