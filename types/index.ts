@@ -1,6 +1,4 @@
-// types/index.ts or src/types/index.ts
-
-export type SportFilter = 'all' | 'football';
+// types/index.ts
 
 export interface FootballTeam {
     name: string;
@@ -22,57 +20,42 @@ export interface FootballTeam {
 }
 
 export interface FootballMatch {
-    id: string | number;
+    id: string;
     sport: 'football';
-    league: string;
     homeTeam: FootballTeam;
     awayTeam: FootballTeam;
+    league: string;
     date: string;
-    time: string;
     venue?: string;
-    status?: string;
 }
 
 export type Match = FootballMatch;
 
-export interface Prediction {
-    match: Match;
-    winProbability: {
-        home: number;
-        draw: number;
-        away: number;
-    };
+export interface FootballPrediction {
+    homeWin: number;
+    draw: number;
+    awayWin: number;
     predictedScore: {
         home: number;
         away: number;
     };
     confidence: number;
+    insights: string[];
+}
+
+export interface Prediction {
+    sport: 'football';
+    match: Match;
+    predictedScore: {
+        home: number;
+        away: number;
+    };
+    confidence: number;
+    winProbability: {
+        home: number;
+        draw: number;
+        away: number;
+    };
     keyFactors: string[];
     recommendation: string;
-}
-
-export interface TeamStats {
-    name: string;
-    avgGoalsScored: number;
-    defensiveStrength: number;
-    formScore: number;
-    xG: number;
-    possession: number;
-    homeWinRate?: number;
-    awayWinRate?: number;
-}
-
-// export interface Match {
-//     homeTeam: TeamStats;
-//     awayTeam: TeamStats;
-// }
-
-export interface FootballPrediction {
-    match: Match;
-    homeWin: number;
-    draw: number;
-    awayWin: number;
-    over25: number;
-    btts: number;
-    expectedGoals: number;
 }

@@ -41,6 +41,7 @@ export default function SportsAnalyticsPlatform() {
     const pred = SportsAnalytics.predictMatch(match.homeTeam, match.awayTeam);
 
     setPrediction({
+      sport: 'football',
       match,
       predictedScore: pred.predictedScore,
       confidence: pred.confidence,

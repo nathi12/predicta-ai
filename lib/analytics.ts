@@ -1,4 +1,4 @@
-// analytics.ts - Complete implementation with API data support
+// lib/analytics.ts - Complete implementation with API data support
 
 import {
     FootballTeam,
@@ -235,7 +235,7 @@ export function getFootballMatchInsights(
 
 // Export the SportsAnalytics class
 export class SportsAnalytics {
-    static predictMatch(homeTeam: FootballTeam, awayTeam: FootballTeam) {
+    static predictMatch(homeTeam: FootballTeam, awayTeam: FootballTeam): FootballPrediction {
         const probabilities = calculateFootballWinProbability(homeTeam, awayTeam);
         const predictedScore = predictFootballScore(homeTeam, awayTeam);
         const insights = getFootballMatchInsights(homeTeam, awayTeam);
@@ -260,11 +260,9 @@ export class SportsAnalytics {
 
 // Type Guards
 export function isFootballPrediction(prediction: any): prediction is FootballPrediction {
-    return 'draw' in prediction;
+    return 'draw' in prediction && typeof prediction.draw === 'number';
 }
 
 export function isFootballMatch(match: any): match is FootballMatch {
     return match.sport === 'football';
 }
-
-

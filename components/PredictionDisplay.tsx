@@ -1,118 +1,243 @@
 import React from 'react';
-import { Brain } from 'lucide-react';
-import { Match, Prediction } from '@/types';
-import { ConfidenceMeter } from './ConfidenceMeter';
-import { FootballPredictionDisplay } from './FootballPrediction';
-import { BasketballPredictionDisplay } from './BasketballPrediction';
-import { AIExplanation } from './AIExplanation';
-import { isFootballPrediction } from '@/lib/analytics';
+import { Prediction, Match } from '@/types';
 
 interface PredictionDisplayProps {
     prediction: Prediction;
     selectedMatch: Match;
 }
 
-export const PredictionDisplay: React.FC<PredictionDisplayProps> = ({
-    prediction,
-    selectedMatch
-}) => {
+export function PredictionDisplay({ prediction, selectedMatch }: PredictionDisplayProps) {
+    // Remove the validation that's causing the error
+    // The prediction is already typed correctly as Prediction which includes sport: 'football'
+
     return (
         <div
-            className="animate-fade-in"
             style={{
-                background:
-                    'linear-gradient(135deg, rgba(26, 31, 58, 0.95) 0%, rgba(15, 20, 25, 0.98) 100%)',
-                border: '2px solid #00ff9d',
-                borderRadius: '20px',
+                background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(59, 130, 246, 0.1) 100%)',
+                border: '2px solid rgba(16, 185, 129, 0.3)',
+                borderRadius: '16px',
                 padding: '32px',
-                marginTop: '32px',
-                position: 'relative',
-                overflow: 'hidden'
+                marginBottom: '32px',
+                animation: 'fadeIn 0.5s ease-in'
             }}
         >
-            <div
-                style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    height: '4px',
-                    background: 'linear-gradient(90deg, #00ff9d 0%, #00b8ff 50%, #ff00de 100%)'
-                }}
-                className="shimmer"
-            />
+            {/* Header */}
+            <div style={{ marginBottom: '32px' }}>
+                <h2
+                    style={{
+                        fontSize: '28px',
+                        fontWeight: 'bold',
+                        marginBottom: '12px',
+                        background: 'linear-gradient(135deg, #10b981 0%, #3b82f6 100%)',
+                        WebkitBackgroundClip: 'text',
+                        WebkitTextFillColor: 'transparent',
+                        backgroundClip: 'text'
+                    }}
+                >
+                    AI Prediction Analysis
+                </h2>
+                <p style={{ color: '#9ca3af', fontSize: '14px' }}>
+                    {selectedMatch.homeTeam.name} vs {selectedMatch.awayTeam.name}
+                </p>
+            </div>
 
+            {/* Predicted Score */}
             <div
                 style={{
                     display: 'flex',
+                    justifyContent: 'center',
                     alignItems: 'center',
-                    gap: '12px',
-                    marginBottom: '24px'
+                    gap: '24px',
+                    marginBottom: '32px',
+                    padding: '24px',
+                    background: 'rgba(0, 0, 0, 0.3)',
+                    borderRadius: '12px'
                 }}
             >
-                <Brain size={32} style={{ color: '#00ff9d' }} className="animate-pulse" />
-                <h2
-                    style={{
-                        margin: 0,
-                        fontSize: '24px',
-                        fontFamily: '"Orbitron", sans-serif',
-                        fontWeight: 800
-                    }}
-                    className="gradient-text"
-                >
-                    AI PREDICTION ANALYSIS
-                </h2>
+                <div style={{ textAlign: 'center' }}>
+                    <p style={{ color: '#9ca3af', fontSize: '12px', marginBottom: '8px' }}>
+                        {selectedMatch.homeTeam.name}
+                    </p>
+                    <p
+                        style={{
+                            fontSize: '48px',
+                            fontWeight: 'bold',
+                            color: '#10b981'
+                        }}
+                    >
+                        {prediction.predictedScore.home}
+                    </p>
+                </div>
+                <p style={{ fontSize: '32px', color: '#6b7280' }}>-</p>
+                <div style={{ textAlign: 'center' }}>
+                    <p style={{ color: '#9ca3af', fontSize: '12px', marginBottom: '8px' }}>
+                        {selectedMatch.awayTeam.name}
+                    </p>
+                    <p
+                        style={{
+                            fontSize: '48px',
+                            fontWeight: 'bold',
+                            color: '#3b82f6'
+                        }}
+                    >
+                        {prediction.predictedScore.away}
+                    </p>
+                </div>
             </div>
 
-            {/* Match Info */}
+            {/* Win Probabilities */}
+            <div style={{ marginBottom: '32px' }}>
+                <h3
+                    style={{
+                        fontSize: '18px',
+                        fontWeight: 'bold',
+                        marginBottom: '16px',
+                        color: '#e8eaed'
+                    }}
+                >
+                    Win Probabilities
+                </h3>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+                    {/* Home Win */}
+                    <div
+                        style={{
+                            background: 'rgba(16, 185, 129, 0.1)',
+                            border: '1px solid rgba(16, 185, 129, 0.3)',
+                            borderRadius: '8px',
+                            padding: '16px',
+                            textAlign: 'center'
+                        }}
+                    >
+                        <p style={{ color: '#9ca3af', fontSize: '12px', marginBottom: '8px' }}>
+                            Home Win
+                        </p>
+                        <p style={{ fontSize: '24px', fontWeight: 'bold', color: '#10b981' }}>
+                            {prediction.winProbability.home.toFixed(1)}%
+                        </p>
+                    </div>
+
+                    {/* Draw */}
+                    <div
+                        style={{
+                            background: 'rgba(251, 191, 36, 0.1)',
+                            border: '1px solid rgba(251, 191, 36, 0.3)',
+                            borderRadius: '8px',
+                            padding: '16px',
+                            textAlign: 'center'
+                        }}
+                    >
+                        <p style={{ color: '#9ca3af', fontSize: '12px', marginBottom: '8px' }}>
+                            Draw
+                        </p>
+                        <p style={{ fontSize: '24px', fontWeight: 'bold', color: '#fbbf24' }}>
+                            {prediction.winProbability.draw.toFixed(1)}%
+                        </p>
+                    </div>
+
+                    {/* Away Win */}
+                    <div
+                        style={{
+                            background: 'rgba(59, 130, 246, 0.1)',
+                            border: '1px solid rgba(59, 130, 246, 0.3)',
+                            borderRadius: '8px',
+                            padding: '16px',
+                            textAlign: 'center'
+                        }}
+                    >
+                        <p style={{ color: '#9ca3af', fontSize: '12px', marginBottom: '8px' }}>
+                            Away Win
+                        </p>
+                        <p style={{ fontSize: '24px', fontWeight: 'bold', color: '#3b82f6' }}>
+                            {prediction.winProbability.away.toFixed(1)}%
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            {/* Confidence */}
             <div
                 style={{
-                    background: 'rgba(0, 255, 157, 0.05)',
+                    marginBottom: '32px',
                     padding: '20px',
-                    borderRadius: '12px',
-                    marginBottom: '24px',
-                    border: '1px solid rgba(0, 255, 157, 0.2)'
+                    background: 'rgba(0, 0, 0, 0.3)',
+                    borderRadius: '12px'
                 }}
             >
-                <div
-                    style={{
-                        fontSize: '14px',
-                        color: '#00ff9d',
-                        marginBottom: '12px',
-                        fontWeight: 600
-                    }}
-                >
-                    {selectedMatch.league} • {selectedMatch.date} {selectedMatch.time}
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '14px', color: '#9ca3af' }}>Confidence Level</span>
+                    <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#10b981' }}>
+                        {prediction.confidence}%
+                    </span>
                 </div>
                 <div
                     style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center'
+                        width: '100%',
+                        height: '8px',
+                        background: 'rgba(107, 114, 128, 0.3)',
+                        borderRadius: '4px',
+                        overflow: 'hidden'
                     }}
                 >
-                    <span style={{ fontSize: '20px', fontWeight: 700 }}>
-                        {selectedMatch.homeTeam.name}
-                    </span>
-                    <span style={{ fontSize: '16px', color: '#888' }}>VS</span>
-                    <span style={{ fontSize: '20px', fontWeight: 700 }}>
-                        {selectedMatch.awayTeam.name}
-                    </span>
+                    <div
+                        style={{
+                            width: `${prediction.confidence}%`,
+                            height: '100%',
+                            background: 'linear-gradient(90deg, #10b981 0%, #3b82f6 100%)',
+                            borderRadius: '4px',
+                            transition: 'width 0.5s ease-in-out'
+                        }}
+                    />
                 </div>
             </div>
 
-            {/* Confidence Score */}
-            <ConfidenceMeter confidence={prediction.confidence} />
+            {/* Key Factors */}
+            <div style={{ marginBottom: '24px' }}>
+                <h3
+                    style={{
+                        fontSize: '18px',
+                        fontWeight: 'bold',
+                        marginBottom: '16px',
+                        color: '#e8eaed'
+                    }}
+                >
+                    Key Factors
+                </h3>
+                <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                    {prediction.keyFactors.map((factor, index) => (
+                        <li
+                            key={index}
+                            style={{
+                                padding: '12px',
+                                marginBottom: '8px',
+                                background: 'rgba(0, 0, 0, 0.3)',
+                                borderRadius: '8px',
+                                borderLeft: '3px solid #10b981',
+                                fontSize: '14px',
+                                color: '#d1d5db'
+                            }}
+                        >
+                            • {factor}
+                        </li>
+                    ))}
+                </ul>
+            </div>
 
-            {/* Sport-Specific Predictions */}
-            {isFootballPrediction(prediction) ? (
-                <FootballPredictionDisplay prediction={prediction} />
-            ) : (
-                <BasketballPredictionDisplay prediction={prediction} />
-            )}
-
-            {/* AI Explanation */}
-            <AIExplanation prediction={prediction} />
+            {/* Recommendation */}
+            <div
+                style={{
+                    padding: '20px',
+                    background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(59, 130, 246, 0.15) 100%)',
+                    borderRadius: '12px',
+                    border: '1px solid rgba(16, 185, 129, 0.3)'
+                }}
+            >
+                <p style={{ fontSize: '14px', color: '#9ca3af', marginBottom: '8px' }}>
+                    Recommendation
+                </p>
+                <p style={{ fontSize: '16px', fontWeight: 'bold', color: '#10b981' }}>
+                    {prediction.recommendation}
+                </p>
+            </div>
         </div>
     );
-};
+}
