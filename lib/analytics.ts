@@ -1,193 +1,270 @@
-import { FootballTeam, BasketballTeam, FootballPrediction, BasketballPrediction } from '@/types';
+// analytics.ts - Complete implementation with API data support
 
+import {
+    FootballTeam,
+    FootballPrediction,
+    FootballMatch,
+} from '@/types';
 
-// Statistical Models and AI Logic
-export class SportsAnalytics {
-    // Poisson Distribution for goal prediction
-    static poissonProbability(lambda: number, k: number): number {
-        return (Math.pow(lambda, k) * Math.exp(-lambda)) / this.factorial(k);
-    }
+/**
+ * Generate football team statistics
+ * This can be used as a fallback when API data is unavailable
+ * or for testing purposes
+ */
+export function generateFootballTeam(
+    name: string,
+    league: string,
+    strength: number,
+    logo?: string
+): FootballTeam {
+    // Strength should be between 0 and 1
+    const normalizedStrength = Math.max(0, Math.min(1, strength));
 
-    static factorial(n: number): number {
-        if (n <= 1) return 1;
-        return n * this.factorial(n - 1);
-    }
+    // Generate form based on strength (e.g., "WWDWL")
+    const form = generateForm(normalizedStrength, 5);
 
-    // Calculate Expected Goals (xG)
-    static calculateXG(shotsOnTarget: number, totalShots: number, possession: number): number {
-        const shotAccuracy = totalShots > 0 ? shotsOnTarget / totalShots : 0;
-        const xG = (shotAccuracy * shotsOnTarget * (possession / 100)) / 10;
-        return Math.max(0, Math.min(5, xG)); // Cap between 0-5
-    }
+    // Calculate stats based on team strength
+    const baseGoalsScored = Math.round(40 + (normalizedStrength * 40)); // 40-80 goals
+    const baseGoalsConceded = Math.round(60 - (normalizedStrength * 40)); // 20-60 goals
 
-    // Elo Rating System
-    static calculateEloChange(ratingA: number, ratingB: number, actualScore: number, kFactor: number = 32): number {
-        const expectedScore = 1 / (1 + Math.pow(10, (ratingB - ratingA) / 400));
-        return kFactor * (actualScore - expectedScore);
-    }
+    const totalMatches = 25; // Assume 25 matches played
+    const wins = Math.round(totalMatches * normalizedStrength * 0.7);
+    const losses = Math.round(totalMatches * (1 - normalizedStrength) * 0.6);
+    const draws = totalMatches - wins - losses;
 
-    // Weighted Recent Form
-    static calculateFormScore(results: number[]): number {
-        let score = 0;
-        const weights = [0.35, 0.25, 0.20, 0.12, 0.08]; // Most recent games weighted more
-        results.forEach((result, index) => {
-            const weight = weights[index] || 0.05;
-            score += result * weight;
-        });
-        return score;
-    }
+    return {
+        name,
+        logo,
+        league,
+        form,
+        goalsScored: baseGoalsScored,
+        goalsConceded: baseGoalsConceded,
+        wins,
+        draws: Math.max(0, draws),
+        losses: Math.max(0, losses),
+        averagePossession: Math.round(45 + (normalizedStrength * 15)), // 45-60%
+        shotsPerGame: Math.round(10 + (normalizedStrength * 10)), // 10-20 shots
+        shotsOnTargetPerGame: Math.round(4 + (normalizedStrength * 6)), // 4-10 shots on target
+        passAccuracy: Math.round(70 + (normalizedStrength * 20)), // 70-90%
+        tacklesPerGame: Math.round(15 + (normalizedStrength * 10)), // 15-25 tackles
+        foulsPerGame: Math.round(12 - (normalizedStrength * 3)), // 9-12 fouls (better teams foul less)
+        cornersPerGame: Math.round(5 + (normalizedStrength * 5)) // 5-10 corners
+    };
+}
 
-    // Match Outcome Prediction using multiple models
-    static predictMatch(homeTeam: FootballTeam, awayTeam: FootballTeam): Omit<FootballPrediction, 'match'> {
-        // Calculate goal expectancy using Poisson
-        const homeGoalExpectancy = homeTeam.avgGoalsScored * 1.15; // Home advantage
-        const awayGoalExpectancy = awayTeam.avgGoalsScored * 0.92;
+/**
+ * Generate a form string (e.g., "WWDLW" for last 5 matches)
+ * W = Win, D = Draw (football only), L = Loss
+ */
+function generateForm(strength: number, length: number = 5): string {
+    const form: string[] = [];
+    const hasDraws = true; // Set to false for basketball
 
-        // Calculate probabilities for different scorelines
-        let homeWinProb = 0;
-        let drawProb = 0;
-        let awayWinProb = 0;
+    for (let i = 0; i < length; i++) {
+        const random = Math.random();
 
-        for (let homeGoals = 0; homeGoals <= 6; homeGoals++) {
-            for (let awayGoals = 0; awayGoals <= 6; awayGoals++) {
-                const prob = this.poissonProbability(homeGoalExpectancy, homeGoals) *
-                    this.poissonProbability(awayGoalExpectancy, awayGoals);
-
-                if (homeGoals > awayGoals) homeWinProb += prob;
-                else if (homeGoals === awayGoals) drawProb += prob;
-                else awayWinProb += prob;
+        if (hasDraws) {
+            // Football: W, D, L
+            if (random < strength * 0.7) {
+                form.push('W');
+            } else if (random < strength * 0.7 + 0.2) {
+                form.push('D');
+            } else {
+                form.push('L');
+            }
+        } else {
+            // Basketball: W, L only
+            if (random < strength) {
+                form.push('W');
+            } else {
+                form.push('L');
             }
         }
+    }
 
-        // Adjust with form and head-to-head
-        const formDiff = homeTeam.formScore - awayTeam.formScore;
-        const adjustment = formDiff * 0.15;
+    return form.join('');
+}
 
-        homeWinProb += adjustment;
-        awayWinProb -= adjustment;
+/**
+ * Calculate win probability for a football match
+ */
+export function calculateFootballWinProbability(
+    homeTeam: FootballTeam,
+    awayTeam: FootballTeam
+): { homeWin: number; draw: number; awayWin: number } {
+    // Calculate team strength scores
+    const homeStrength = calculateFootballTeamStrength(homeTeam);
+    const awayStrength = calculateFootballTeamStrength(awayTeam);
 
-        // Normalize probabilities
-        const total = homeWinProb + drawProb + awayWinProb;
-        homeWinProb /= total;
-        drawProb /= total;
-        awayWinProb /= total;
+    // Home advantage factor (typically 5-10% boost)
+    const homeAdvantage = 1.08;
+    const adjustedHomeStrength = homeStrength * homeAdvantage;
 
-        // Over/Under prediction
-        const expectedTotalGoals = homeGoalExpectancy + awayGoalExpectancy;
-        const over25Prob = 1 - this.cumulativePoisson(expectedTotalGoals, 2);
-        const bttsProb = (1 - this.poissonProbability(homeGoalExpectancy, 0)) *
-            (1 - this.poissonProbability(awayGoalExpectancy, 0));
+    // Calculate raw probabilities
+    const total = adjustedHomeStrength + awayStrength;
+    let homeWinProb = (adjustedHomeStrength / total) * 100;
+    let awayWinProb = (awayStrength / total) * 100;
+
+    // Draw probability is inversely related to strength difference
+    const strengthDifference = Math.abs(homeStrength - awayStrength);
+    let drawProb = Math.max(15, 30 - (strengthDifference * 50)); // 15-30% draw chance
+
+    // Normalize to 100%
+    const totalProb = homeWinProb + drawProb + awayWinProb;
+    homeWinProb = (homeWinProb / totalProb) * 100;
+    drawProb = (drawProb / totalProb) * 100;
+    awayWinProb = (awayWinProb / totalProb) * 100;
+
+    return {
+        homeWin: Math.round(homeWinProb * 10) / 10,
+        draw: Math.round(drawProb * 10) / 10,
+        awayWin: Math.round(awayWinProb * 10) / 10
+    };
+}
+
+/**
+ * Calculate overall team strength for football
+ */
+function calculateFootballTeamStrength(team: FootballTeam): number {
+    const totalMatches = team.wins + team.draws + team.losses;
+    if (totalMatches === 0) return 0.5; // Default to 0.5 if no matches
+
+    // Weighted factors
+    const winRate = team.wins / totalMatches;
+    const goalDifference = (team.goalsScored - team.goalsConceded) / totalMatches;
+    const formScore = calculateFormScore(team.form) / 5; // Normalize to 0-1
+    const possessionScore = team.averagePossession / 100;
+    const shotAccuracy = team.shotsOnTargetPerGame / Math.max(1, team.shotsPerGame);
+    const passScore = team.passAccuracy / 100;
+
+    // Weighted average of all factors
+    const strength = (
+        winRate * 0.30 +
+        (goalDifference + 1) / 3 * 0.20 + // Normalize goal difference
+        formScore * 0.20 +
+        possessionScore * 0.10 +
+        shotAccuracy * 0.10 +
+        passScore * 0.10
+    );
+
+    return Math.max(0, Math.min(1, strength)); // Clamp between 0 and 1
+}
+
+
+/**
+ * Calculate score from form string
+ * W = 1 point, D = 0.5 points, L = 0 points
+ */
+function calculateFormScore(form: string): number {
+    if (!form || form === 'N/A') return 2.5; // Default to average
+
+    let score = 0;
+    for (const result of form) {
+        if (result === 'W') score += 1;
+        else if (result === 'D') score += 0.5;
+        // L = 0 points
+    }
+    return score;
+}
+
+/**
+ * Predict score for football match
+ */
+export function predictFootballScore(
+    homeTeam: FootballTeam,
+    awayTeam: FootballTeam
+): { homeScore: number; awayScore: number } {
+    const homeStrength = calculateFootballTeamStrength(homeTeam);
+    const awayStrength = calculateFootballTeamStrength(awayTeam);
+
+    // Average goals per game for each team
+    const homeAvgGoals = homeTeam.goalsScored / Math.max(1, homeTeam.wins + homeTeam.draws + homeTeam.losses);
+    const awayAvgGoals = awayTeam.goalsScored / Math.max(1, awayTeam.wins + awayTeam.draws + awayTeam.losses);
+
+    // Predict goals with strength modifiers and home advantage
+    const homeScore = Math.round((homeAvgGoals * homeStrength * 1.1) + Math.random() * 0.5);
+    const awayScore = Math.round((awayAvgGoals * awayStrength * 0.95) + Math.random() * 0.5);
+
+    return {
+        homeScore: Math.max(0, homeScore),
+        awayScore: Math.max(0, awayScore)
+    };
+}
+
+/**
+ * Get match insights and key stats
+ */
+export function getFootballMatchInsights(
+    homeTeam: FootballTeam,
+    awayTeam: FootballTeam
+): string[] {
+    const insights: string[] = [];
+
+    // Form comparison
+    const homeFormScore = calculateFormScore(homeTeam.form);
+    const awayFormScore = calculateFormScore(awayTeam.form);
+    if (homeFormScore > awayFormScore + 1) {
+        insights.push(`${homeTeam.name} is in better form with ${homeTeam.form}`);
+    } else if (awayFormScore > homeFormScore + 1) {
+        insights.push(`${awayTeam.name} is in better form with ${awayTeam.form}`);
+    }
+
+    // Goal scoring
+    if (homeTeam.goalsScored > awayTeam.goalsScored * 1.3) {
+        insights.push(`${homeTeam.name} has scored significantly more goals this season`);
+    } else if (awayTeam.goalsScored > homeTeam.goalsScored * 1.3) {
+        insights.push(`${awayTeam.name} has scored significantly more goals this season`);
+    }
+
+    // Defense
+    if (homeTeam.goalsConceded < awayTeam.goalsConceded * 0.7) {
+        insights.push(`${homeTeam.name} has a much stronger defense`);
+    } else if (awayTeam.goalsConceded < homeTeam.goalsConceded * 0.7) {
+        insights.push(`${awayTeam.name} has a much stronger defense`);
+    }
+
+    // Possession
+    if (Math.abs(homeTeam.averagePossession - awayTeam.averagePossession) > 10) {
+        const dominantTeam = homeTeam.averagePossession > awayTeam.averagePossession ? homeTeam : awayTeam;
+        insights.push(`${dominantTeam.name} typically dominates possession`);
+    }
+
+    return insights;
+}
+
+
+// Export the SportsAnalytics class
+export class SportsAnalytics {
+    static predictMatch(homeTeam: FootballTeam, awayTeam: FootballTeam) {
+        const probabilities = calculateFootballWinProbability(homeTeam, awayTeam);
+        const predictedScore = predictFootballScore(homeTeam, awayTeam);
+        const insights = getFootballMatchInsights(homeTeam, awayTeam);
+        const homeStrength = calculateFootballTeamStrength(homeTeam);
+        const awayStrength = calculateFootballTeamStrength(awayTeam);
+        const strengthDiff = Math.abs(homeStrength - awayStrength);
+        const confidence = Math.min(95, Math.round(50 + (strengthDiff * 100)));
 
         return {
-            homeWin: homeWinProb,
-            draw: drawProb,
-            awayWin: awayWinProb,
-            over25: over25Prob,
-            btts: bttsProb,
-            expectedGoals: expectedTotalGoals,
-            confidence: this.calculateConfidence(homeTeam, awayTeam)
-        };
-    }
-
-    static cumulativePoisson(lambda: number, k: number): number {
-        let sum = 0;
-        for (let i = 0; i <= k; i++) {
-            sum += this.poissonProbability(lambda, i);
-        }
-        return sum;
-    }
-
-    static calculateConfidence(homeTeam: FootballTeam | BasketballTeam, awayTeam: FootballTeam | BasketballTeam): number {
-        const dataQuality = (homeTeam.matchesPlayed + awayTeam.matchesPlayed) / 20;
-        const formConsistency = 1 - Math.abs(homeTeam.formScore - awayTeam.formScore) / 2;
-        return Math.min(95, Math.max(60, (dataQuality * 0.4 + formConsistency * 0.6) * 100));
-    }
-
-    // Basketball Prediction
-    static predictBasketball(homeTeam: BasketballTeam, awayTeam: BasketballTeam): Omit<BasketballPrediction, 'match'> {
-        const homePPG = homeTeam.pointsPerGame * 1.08; // Home court advantage
-        const awayPPG = awayTeam.pointsPerGame * 0.96;
-
-        const homeDefRating = homeTeam.defensiveRating;
-        const awayDefRating = awayTeam.defensiveRating;
-
-        const expectedHomePoints = (homePPG * 0.6) + ((120 - awayDefRating) * 0.4);
-        const expectedAwayPoints = (awayPPG * 0.6) + ((120 - homeDefRating) * 0.4);
-
-        const pointDiff = expectedHomePoints - expectedAwayPoints;
-        const homeWinProb = 1 / (1 + Math.exp(-pointDiff / 12));
-
-        return {
-            homeWin: homeWinProb,
-            awayWin: 1 - homeWinProb,
-            expectedHomePoints,
-            expectedAwayPoints,
-            spread: pointDiff,
-            totalPoints: expectedHomePoints + expectedAwayPoints,
-            confidence: this.calculateConfidence(homeTeam, awayTeam)
+            homeWin: probabilities.homeWin,
+            draw: probabilities.draw,
+            awayWin: probabilities.awayWin,
+            predictedScore: {
+                home: predictedScore.homeScore,
+                away: predictedScore.awayScore
+            },
+            confidence,
+            insights
         };
     }
 }
 
-// Sample Data Generators
-export const generateFootballTeam = (name: string, league: string, strength: number): FootballTeam => {
-    const recentForm = Array.from({ length: 5 }, () => Math.random() < 0.3 + strength * 0.5 ? 3 : Math.random() < 0.5 ? 1 : 0);
-    const possession = 45 + (strength * 15);
-    const shotsOnTarget = 3 + (strength * 4);
-    const totalShots = 10 + (strength * 8);
-
-    return {
-        name,
-        league,
-        elo: 1200 + (strength * 400),
-        avgGoalsScored: 1.2 + (strength * 1.3),
-        avgGoalsConceded: 2.0 - (strength * 1.2),
-        homeWinRate: 0.35 + (strength * 0.40),
-        awayWinRate: 0.20 + (strength * 0.30),
-        recentForm,
-        possession,
-        shotsOnTarget,
-        totalShots,
-        defensiveStrength: 60 + (strength * 30),
-        matchesPlayed: 10,
-        get formScore() {
-            return SportsAnalytics.calculateFormScore(this.recentForm);
-        },
-        get xG() {
-            return SportsAnalytics.calculateXG(this.shotsOnTarget, this.totalShots, this.possession);
-        }
-    };
-};
-
-export const generateBasketballTeam = (name: string, league: string, strength: number): BasketballTeam => {
-    const recentForm = Array.from({ length: 5 }, () => Math.random() < 0.3 + strength * 0.5 ? 1 : 0);
-
-    return {
-        name,
-        league,
-        pointsPerGame: 95 + (strength * 20),
-        defensiveRating: 115 - (strength * 15),
-        pace: 95 + (strength * 10),
-        offensiveRating: 105 + (strength * 15),
-        homeWinRate: 0.40 + (strength * 0.40),
-        awayWinRate: 0.30 + (strength * 0.35),
-        recentForm,
-        matchesPlayed: 10,
-        get formScore() {
-            return this.recentForm.reduce((a, b) => a + b, 0) / this.recentForm.length;
-        }
-    };
-};
-
-// Type guard functions
-export const isFootballPrediction = (prediction: any): prediction is FootballPrediction => {
+// Type Guards
+export function isFootballPrediction(prediction: any): prediction is FootballPrediction {
     return 'draw' in prediction;
-};
+}
 
-export const isFootballMatch = (match: any): match is import('@/types').FootballMatch => {
+export function isFootballMatch(match: any): match is FootballMatch {
     return match.sport === 'football';
-};
+}
 
-export const isBasketballMatch = (match: any): match is import('@/types').BasketballMatch => {
-    return match.sport === 'basketball';
-};
+

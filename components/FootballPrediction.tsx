@@ -18,6 +18,18 @@ export const FootballPredictionDisplay: React.FC<FootballPredictionDisplayProps>
     prediction
 }) => {
     const { match } = prediction;
+    const homeTeam = match.homeTeam;
+    const awayTeam = match.awayTeam;
+
+    // Calculate derived stats from existing data
+    const homeAvgGoals = homeTeam.goalsScored;
+    const awayAvgGoals = awayTeam.goalsScored;
+    const homeFormScore = homeTeam.wins / (homeTeam.wins + homeTeam.draws + homeTeam.losses);
+    const awayFormScore = awayTeam.wins / (awayTeam.wins + awayTeam.draws + awayTeam.losses);
+    const homeDefense = 100 - (homeTeam.goalsConceded * 10);
+    const awayDefense = 100 - (awayTeam.goalsConceded * 10);
+    const homeWinRate = homeTeam.wins / (homeTeam.wins + homeTeam.draws + homeTeam.losses);
+    const awayWinRate = awayTeam.wins / (awayTeam.wins + awayTeam.draws + awayTeam.losses);
 
     return (
         <>
@@ -190,28 +202,28 @@ export const FootballPredictionDisplay: React.FC<FootballPredictionDisplayProps>
                             data={[
                                 {
                                     metric: 'Attack',
-                                    home: match.homeTeam.avgGoalsScored * 20,
-                                    away: match.awayTeam.avgGoalsScored * 20
+                                    home: homeAvgGoals * 20,
+                                    away: awayAvgGoals * 20
                                 },
                                 {
                                     metric: 'Defense',
-                                    home: match.homeTeam.defensiveStrength,
-                                    away: match.awayTeam.defensiveStrength
+                                    home: Math.max(0, Math.min(100, homeDefense)),
+                                    away: Math.max(0, Math.min(100, awayDefense))
                                 },
                                 {
                                     metric: 'Form',
-                                    home: match.homeTeam.formScore * 33.33,
-                                    away: match.awayTeam.formScore * 33.33
+                                    home: homeFormScore * 100,
+                                    away: awayFormScore * 100
                                 },
                                 {
-                                    metric: 'xG',
-                                    home: match.homeTeam.xG * 20,
-                                    away: match.awayTeam.xG * 20
+                                    metric: 'Shots',
+                                    home: homeTeam.shotsPerGame * 5,
+                                    away: awayTeam.shotsPerGame * 5
                                 },
                                 {
                                     metric: 'Possession',
-                                    home: match.homeTeam.possession,
-                                    away: match.awayTeam.possession
+                                    home: homeTeam.averagePossession,
+                                    away: awayTeam.averagePossession
                                 }
                             ]}
                         >
@@ -219,14 +231,14 @@ export const FootballPredictionDisplay: React.FC<FootballPredictionDisplayProps>
                             <PolarAngleAxis dataKey="metric" tick={{ fill: '#888', fontSize: 12 }} />
                             <PolarRadiusAxis angle={90} domain={[0, 100]} tick={{ fill: '#888' }} />
                             <Radar
-                                name={match.homeTeam.name}
+                                name={homeTeam.name}
                                 dataKey="home"
                                 stroke="#00ff9d"
                                 fill="#00ff9d"
                                 fillOpacity={0.3}
                             />
                             <Radar
-                                name={match.awayTeam.name}
+                                name={awayTeam.name}
                                 dataKey="away"
                                 stroke="#00b8ff"
                                 fill="#00b8ff"
@@ -254,34 +266,34 @@ export const FootballPredictionDisplay: React.FC<FootballPredictionDisplayProps>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' }}>
                     {[
                         {
-                            label: 'Avg Goals Scored',
-                            home: match.homeTeam.avgGoalsScored.toFixed(2),
-                            away: match.awayTeam.avgGoalsScored.toFixed(2)
+                            label: 'Goals Scored',
+                            home: homeAvgGoals.toFixed(2),
+                            away: awayAvgGoals.toFixed(2)
                         },
                         {
                             label: 'Form Score',
-                            home: match.homeTeam.formScore.toFixed(2),
-                            away: match.awayTeam.formScore.toFixed(2)
+                            home: (homeFormScore * 100).toFixed(0) + '%',
+                            away: (awayFormScore * 100).toFixed(0) + '%'
                         },
                         {
-                            label: 'Expected Goals (xG)',
-                            home: match.homeTeam.xG.toFixed(2),
-                            away: match.awayTeam.xG.toFixed(2)
+                            label: 'Shots Per Game',
+                            home: homeTeam.shotsPerGame.toFixed(1),
+                            away: awayTeam.shotsPerGame.toFixed(1)
                         },
                         {
                             label: 'Possession %',
-                            home: match.homeTeam.possession.toFixed(0) + '%',
-                            away: match.awayTeam.possession.toFixed(0) + '%'
+                            home: homeTeam.averagePossession.toFixed(0) + '%',
+                            away: awayTeam.averagePossession.toFixed(0) + '%'
                         },
                         {
-                            label: 'Defensive Strength',
-                            home: match.homeTeam.defensiveStrength.toFixed(0),
-                            away: match.awayTeam.defensiveStrength.toFixed(0)
+                            label: 'Goals Conceded',
+                            home: homeTeam.goalsConceded.toFixed(0),
+                            away: awayTeam.goalsConceded.toFixed(0)
                         },
                         {
-                            label: 'Home/Away Win Rate',
-                            home: (match.homeTeam.homeWinRate * 100).toFixed(0) + '%',
-                            away: (match.awayTeam.awayWinRate * 100).toFixed(0) + '%'
+                            label: 'Win Rate',
+                            home: (homeWinRate * 100).toFixed(0) + '%',
+                            away: (awayWinRate * 100).toFixed(0) + '%'
                         }
                     ].map((stat, idx) => (
                         <div
