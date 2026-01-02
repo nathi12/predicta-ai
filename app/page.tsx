@@ -13,7 +13,9 @@ export default function SportsAnalyticsPlatform() {
   const { matches: allMatches, loading, error } = useUpcomingMatches();
 
   const [filterLeague, setFilterLeague] = useState<string>('all');
-  const [sortBy, setSortBy] = useState<string>('date'); // date, confidence, over15, over25, over35, btts, corners65, corners85, corners105
+  const [filterDate, setFilterDate] = useState<string>('all'); // all, today, tomorrow, week
+  const [sortBy, setSortBy] = useState<string>('confidence'); // confidence, over15, over25, over35, btts, corners65, corners85, corners105
+  const [dateOrder, setDateOrder] = useState<'asc' | 'desc'>('asc'); // asc = earliest first, desc = latest first
   const [matchPredictions, setMatchPredictions] = useState<Map<string, Prediction>>(new Map());
   const [bettingMarkets, setBettingMarkets] = useState<Map<string, BettingMarkets>>(new Map());
 
@@ -27,11 +29,43 @@ export default function SportsAnalyticsPlatform() {
     return ['all', ...Array.from(uniqueLeagues).sort()];
   }, [allMatches]);
 
-  // Filter matches by league
+  // Filter matches by league and date
   const filteredMatches = useMemo(() => {
-    if (filterLeague === 'all') return allMatches;
-    return allMatches.filter(match => match.league === filterLeague);
-  }, [allMatches, filterLeague]);
+    let filtered = allMatches;
+
+    // Filter by league
+    if (filterLeague !== 'all') {
+      filtered = filtered.filter(match => match.league === filterLeague);
+    }
+
+    // Filter by date
+    if (filterDate !== 'all') {
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const nextWeek = new Date(today);
+      nextWeek.setDate(nextWeek.getDate() + 7);
+
+      filtered = filtered.filter(match => {
+        const matchDate = new Date(match.date);
+        const matchDay = new Date(matchDate.getFullYear(), matchDate.getMonth(), matchDate.getDate());
+
+        switch (filterDate) {
+          case 'today':
+            return matchDay.getTime() === today.getTime();
+          case 'tomorrow':
+            return matchDay.getTime() === tomorrow.getTime();
+          case 'week':
+            return matchDay.getTime() >= today.getTime() && matchDay.getTime() < nextWeek.getTime();
+          default:
+            return true;
+        }
+      });
+    }
+
+    return filtered;
+  }, [allMatches, filterLeague, filterDate]);
 
   // Generate predictions for all matches
   useEffect(() => {
@@ -76,31 +110,52 @@ export default function SportsAnalyticsPlatform() {
     }));
 
     return matchesWithData.sort((a, b) => {
-      if (!a.prediction || !a.markets || !b.prediction || !b.markets) return 0;
+      if (!a.prediction || !a.markets || !b.prediction || !b.markets) {
+        // Fallback to date sorting if predictions aren't ready
+        const dateA = new Date(a.match.date).getTime();
+        const dateB = new Date(b.match.date).getTime();
+        return dateOrder === 'asc' ? dateA - dateB : dateB - dateA;
+      }
 
+      // First sort by the selected probability metric
+      let comparison = 0;
       switch (sortBy) {
         case 'confidence':
-          return b.prediction.confidence - a.prediction.confidence;
+          comparison = b.prediction.confidence - a.prediction.confidence;
+          break;
         case 'over15':
-          return b.markets.over15Goals.probability - a.markets.over15Goals.probability;
+          comparison = b.markets.over15Goals.probability - a.markets.over15Goals.probability;
+          break;
         case 'over25':
-          return b.markets.over25Goals.probability - a.markets.over25Goals.probability;
+          comparison = b.markets.over25Goals.probability - a.markets.over25Goals.probability;
+          break;
         case 'over35':
-          return b.markets.over35Goals.probability - a.markets.over35Goals.probability;
+          comparison = b.markets.over35Goals.probability - a.markets.over35Goals.probability;
+          break;
         case 'btts':
-          return b.markets.btts.probability - a.markets.btts.probability;
+          comparison = b.markets.btts.probability - a.markets.btts.probability;
+          break;
         case 'corners65':
-          return b.markets.corners.over65.probability - a.markets.corners.over65.probability;
+          comparison = b.markets.corners.over65.probability - a.markets.corners.over65.probability;
+          break;
         case 'corners85':
-          return b.markets.corners.over85.probability - a.markets.corners.over85.probability;
+          comparison = b.markets.corners.over85.probability - a.markets.corners.over85.probability;
+          break;
         case 'corners105':
-          return b.markets.corners.over105.probability - a.markets.corners.over105.probability;
-        case 'date':
-        default:
-          return new Date(a.match.date).getTime() - new Date(b.match.date).getTime();
+          comparison = b.markets.corners.over105.probability - a.markets.corners.over105.probability;
+          break;
       }
+
+      // If probabilities are equal (or very close), use date as tiebreaker
+      if (Math.abs(comparison) < 0.01) {
+        const dateA = new Date(a.match.date).getTime();
+        const dateB = new Date(b.match.date).getTime();
+        return dateOrder === 'asc' ? dateA - dateB : dateB - dateA;
+      }
+
+      return comparison;
     }).map(item => item.match);
-  }, [filteredMatches, matchPredictions, bettingMarkets, sortBy]);
+  }, [filteredMatches, matchPredictions, bettingMarkets, sortBy, dateOrder]);
 
   return (
     <div
@@ -142,6 +197,243 @@ export default function SportsAnalyticsPlatform() {
             onLeagueChange={setFilterLeague}
           />
 
+          {/* Date Filter */}
+          <div
+            style={{
+              marginTop: '16px',
+              background: 'rgba(30, 41, 59, 0.4)',
+              border: '1px solid rgba(96, 165, 250, 0.2)',
+              borderRadius: '12px',
+              padding: '20px'
+            }}
+          >
+            <div
+              style={{
+                fontSize: '11px',
+                color: '#9ca3af',
+                textTransform: 'uppercase',
+                letterSpacing: '1px',
+                marginBottom: '12px',
+                fontWeight: 600
+              }}
+            >
+              📅 Filter by Date
+            </div>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+                gap: '10px'
+              }}
+            >
+              {[
+                { value: 'all', label: '📆 All Dates' },
+                { value: 'today', label: '🌅 Today' },
+                { value: 'tomorrow', label: '🌄 Tomorrow' },
+                { value: 'week', label: '📅 Next 7 Days' }
+              ].map(option => (
+                <button
+                  key={option.value}
+                  onClick={() => setFilterDate(option.value)}
+                  style={{
+                    padding: '10px 14px',
+                    background: filterDate === option.value
+                      ? 'linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%)'
+                      : 'rgba(96, 165, 250, 0.1)',
+                    border: filterDate === option.value
+                      ? '1px solid rgba(96, 165, 250, 0.5)'
+                      : '1px solid rgba(96, 165, 250, 0.2)',
+                    borderRadius: '8px',
+                    color: filterDate === option.value ? '#fff' : '#9ca3af',
+                    fontSize: '11px',
+                    fontWeight: filterDate === option.value ? 600 : 400,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    textAlign: 'center',
+                    fontFamily: 'inherit'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (filterDate !== option.value) {
+                      e.currentTarget.style.background = 'rgba(96, 165, 250, 0.15)';
+                      e.currentTarget.style.color = '#e8eaed';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (filterDate !== option.value) {
+                      e.currentTarget.style.background = 'rgba(96, 165, 250, 0.1)';
+                      e.currentTarget.style.color = '#9ca3af';
+                    }
+                  }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Active Date Filter Indicator */}
+            {filterDate !== 'all' && (
+              <div
+                style={{
+                  marginTop: '12px',
+                  padding: '8px 12px',
+                  background: 'rgba(34, 197, 94, 0.1)',
+                  border: '1px solid rgba(34, 197, 94, 0.2)',
+                  borderRadius: '6px',
+                  fontSize: '11px',
+                  color: '#4ade80',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}
+              >
+                <span>✓</span>
+                <span>
+                  Showing matches for{' '}
+                  <strong style={{ fontWeight: 600 }}>
+                    {filterDate === 'today' && 'Today'}
+                    {filterDate === 'tomorrow' && 'Tomorrow'}
+                    {filterDate === 'week' && 'Next 7 Days'}
+                  </strong>
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Date Order Toggle */}
+          <div
+            style={{
+              marginTop: '16px',
+              background: 'rgba(30, 41, 59, 0.4)',
+              border: '1px solid rgba(96, 165, 250, 0.2)',
+              borderRadius: '12px',
+              padding: '20px'
+            }}
+          >
+            <div
+              style={{
+                fontSize: '11px',
+                color: '#9ca3af',
+                textTransform: 'uppercase',
+                letterSpacing: '1px',
+                marginBottom: '12px',
+                fontWeight: 600
+              }}
+            >
+              🕐 Date Order
+            </div>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: '10px'
+              }}
+            >
+              <button
+                onClick={() => setDateOrder('asc')}
+                style={{
+                  padding: '12px 16px',
+                  background: dateOrder === 'asc'
+                    ? 'linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%)'
+                    : 'rgba(96, 165, 250, 0.1)',
+                  border: dateOrder === 'asc'
+                    ? '1px solid rgba(96, 165, 250, 0.5)'
+                    : '1px solid rgba(96, 165, 250, 0.2)',
+                  borderRadius: '8px',
+                  color: dateOrder === 'asc' ? '#fff' : '#9ca3af',
+                  fontSize: '12px',
+                  fontWeight: dateOrder === 'asc' ? 600 : 400,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  textAlign: 'center',
+                  fontFamily: 'inherit',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px'
+                }}
+                onMouseEnter={(e) => {
+                  if (dateOrder !== 'asc') {
+                    e.currentTarget.style.background = 'rgba(96, 165, 250, 0.15)';
+                    e.currentTarget.style.color = '#e8eaed';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (dateOrder !== 'asc') {
+                    e.currentTarget.style.background = 'rgba(96, 165, 250, 0.1)';
+                    e.currentTarget.style.color = '#9ca3af';
+                  }
+                }}
+              >
+                <span>⏰</span>
+                <span>Earliest First</span>
+              </button>
+
+              <button
+                onClick={() => setDateOrder('desc')}
+                style={{
+                  padding: '12px 16px',
+                  background: dateOrder === 'desc'
+                    ? 'linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%)'
+                    : 'rgba(96, 165, 250, 0.1)',
+                  border: dateOrder === 'desc'
+                    ? '1px solid rgba(96, 165, 250, 0.5)'
+                    : '1px solid rgba(96, 165, 250, 0.2)',
+                  borderRadius: '8px',
+                  color: dateOrder === 'desc' ? '#fff' : '#9ca3af',
+                  fontSize: '12px',
+                  fontWeight: dateOrder === 'desc' ? 600 : 400,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  textAlign: 'center',
+                  fontFamily: 'inherit',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px'
+                }}
+                onMouseEnter={(e) => {
+                  if (dateOrder !== 'desc') {
+                    e.currentTarget.style.background = 'rgba(96, 165, 250, 0.15)';
+                    e.currentTarget.style.color = '#e8eaed';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (dateOrder !== 'desc') {
+                    e.currentTarget.style.background = 'rgba(96, 165, 250, 0.1)';
+                    e.currentTarget.style.color = '#9ca3af';
+                  }
+                }}
+              >
+                <span>⏱️</span>
+                <span>Latest First</span>
+              </button>
+            </div>
+
+            {/* Active Date Order Indicator */}
+            <div
+              style={{
+                marginTop: '12px',
+                padding: '8px 12px',
+                background: 'rgba(34, 197, 94, 0.1)',
+                border: '1px solid rgba(34, 197, 94, 0.2)',
+                borderRadius: '6px',
+                fontSize: '11px',
+                color: '#4ade80',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}
+            >
+              <span>✓</span>
+              <span>
+                Matches ordered by{' '}
+                <strong style={{ fontWeight: 600 }}>
+                  {dateOrder === 'asc' ? 'Earliest to Latest' : 'Latest to Earliest'}
+                </strong>
+              </span>
+            </div>
+          </div>
+
           {/* Sort By Filter */}
           <div
             style={{
@@ -172,7 +464,6 @@ export default function SportsAnalyticsPlatform() {
               }}
             >
               {[
-                { value: 'date', label: '📅 Date', icon: '📅' },
                 { value: 'confidence', label: '🎯 Confidence', icon: '🎯' },
                 { value: 'over15', label: '⚽ Over 1.5', icon: '⚽' },
                 { value: 'over25', label: '⚽⚽ Over 2.5', icon: '⚽' },
@@ -221,37 +512,36 @@ export default function SportsAnalyticsPlatform() {
             </div>
 
             {/* Active Sort Indicator */}
-            {sortBy !== 'date' && (
-              <div
-                style={{
-                  marginTop: '12px',
-                  padding: '8px 12px',
-                  background: 'rgba(34, 197, 94, 0.1)',
-                  border: '1px solid rgba(34, 197, 94, 0.2)',
-                  borderRadius: '6px',
-                  fontSize: '11px',
-                  color: '#4ade80',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px'
-                }}
-              >
-                <span>✓</span>
-                <span>
-                  Matches sorted by{' '}
-                  <strong style={{ fontWeight: 600 }}>
-                    {sortBy === 'confidence' && 'Highest Confidence'}
-                    {sortBy === 'over15' && 'Highest Over 1.5 Goals Probability'}
-                    {sortBy === 'over25' && 'Highest Over 2.5 Goals Probability'}
-                    {sortBy === 'over35' && 'Highest Over 3.5 Goals Probability'}
-                    {sortBy === 'btts' && 'Highest BTTS Probability'}
-                    {sortBy === 'corners65' && 'Highest Over 6.5 Corners Probability'}
-                    {sortBy === 'corners85' && 'Highest Over 8.5 Corners Probability'}
-                    {sortBy === 'corners105' && 'Highest Over 10.5 Corners Probability'}
-                  </strong>
-                </span>
-              </div>
-            )}
+            <div
+              style={{
+                marginTop: '12px',
+                padding: '8px 12px',
+                background: 'rgba(34, 197, 94, 0.1)',
+                border: '1px solid rgba(34, 197, 94, 0.2)',
+                borderRadius: '6px',
+                fontSize: '11px',
+                color: '#4ade80',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}
+            >
+              <span>✓</span>
+              <span>
+                Matches sorted by{' '}
+                <strong style={{ fontWeight: 600 }}>
+                  {sortBy === 'confidence' && 'Highest Confidence'}
+                  {sortBy === 'over15' && 'Highest Over 1.5 Goals Probability'}
+                  {sortBy === 'over25' && 'Highest Over 2.5 Goals Probability'}
+                  {sortBy === 'over35' && 'Highest Over 3.5 Goals Probability'}
+                  {sortBy === 'btts' && 'Highest BTTS Probability'}
+                  {sortBy === 'corners65' && 'Highest Over 6.5 Corners Probability'}
+                  {sortBy === 'corners85' && 'Highest Over 8.5 Corners Probability'}
+                  {sortBy === 'corners105' && 'Highest Over 10.5 Corners Probability'}
+                </strong>
+                {' (ties broken by date order)'}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -306,7 +596,7 @@ export default function SportsAnalyticsPlatform() {
                   No matches found
                 </p>
                 <p style={{ fontSize: '14px' }}>
-                  Try selecting a different league or check back later
+                  Try selecting a different league or date range
                 </p>
               </div>
             ) : (
@@ -329,29 +619,27 @@ export default function SportsAnalyticsPlatform() {
                     }}
                   >
                     {/* Ranking Badge */}
-                    {sortBy !== 'date' && (
-                      <div
-                        style={{
-                          position: 'absolute',
-                          top: '12px',
-                          right: '12px',
-                          background: idx < 3
-                            ? 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)'
-                            : 'rgba(96, 165, 250, 0.2)',
-                          color: idx < 3 ? '#fff' : '#60a5fa',
-                          padding: '6px 12px',
-                          borderRadius: '8px',
-                          fontSize: '12px',
-                          fontWeight: 700,
-                          border: idx < 3
-                            ? '1px solid rgba(251, 191, 36, 0.5)'
-                            : '1px solid rgba(96, 165, 250, 0.3)',
-                          boxShadow: idx < 3 ? '0 2px 8px rgba(251, 191, 36, 0.3)' : 'none'
-                        }}
-                      >
-                        #{idx + 1}
-                      </div>
-                    )}
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: '12px',
+                        right: '12px',
+                        background: idx < 3
+                          ? 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)'
+                          : 'rgba(96, 165, 250, 0.2)',
+                        color: idx < 3 ? '#fff' : '#60a5fa',
+                        padding: '6px 12px',
+                        borderRadius: '8px',
+                        fontSize: '12px',
+                        fontWeight: 700,
+                        border: idx < 3
+                          ? '1px solid rgba(251, 191, 36, 0.5)'
+                          : '1px solid rgba(96, 165, 250, 0.3)',
+                        boxShadow: idx < 3 ? '0 2px 8px rgba(251, 191, 36, 0.3)' : 'none'
+                      }}
+                    >
+                      #{idx + 1}
+                    </div>
 
                     {/* Match Header */}
                     <div style={{ marginBottom: '20px' }}>
