@@ -1,10 +1,138 @@
-// lib/analytics.ts - Complete implementation with API data support
+// lib/analytics.ts - Complete implementation with API data support and betting markets
 
 import {
     FootballTeam,
     FootballPrediction,
     FootballMatch,
 } from '@/types';
+
+/**
+ * Betting Markets Interface
+ */
+export interface BettingMarkets {
+    over15Goals: { probability: number; recommended: boolean };
+    over25Goals: { probability: number; recommended: boolean };
+    over35Goals: { probability: number; recommended: boolean };
+    btts: { probability: number; recommended: boolean }; // Both Teams To Score
+    corners: {
+        over65: { probability: number; recommended: boolean };
+        over85: { probability: number; recommended: boolean };
+        over105: { probability: number; recommended: boolean };
+    };
+}
+
+/**
+ * Calculate betting markets probabilities
+ * Uses team statistics and predicted score to estimate market outcomes
+ */
+export function calculateBettingMarkets(
+    homeTeam: FootballTeam,
+    awayTeam: FootballTeam,
+    predictedScore: { home: number; away: number },
+    confidence: number
+): BettingMarkets {
+    const totalGoals = predictedScore.home + predictedScore.away;
+
+    // Calculate matches played
+    const homeMatches = homeTeam.wins + homeTeam.draws + homeTeam.losses;
+    const awayMatches = awayTeam.wins + awayTeam.draws + awayTeam.losses;
+    const totalMatches = homeMatches + awayMatches;
+
+    // Average goals per game for both teams combined
+    const avgGoals = totalMatches > 0
+        ? (homeTeam.goalsScored + awayTeam.goalsScored) / totalMatches * 2
+        : 2.5; // Default average
+
+    // Goals Markets - Enhanced with team statistics
+    // Over 1.5 Goals
+    const over15BaseProb = totalGoals >= 2 ? 70 : 40;
+    const over15Adjustment = avgGoals > 2.5 ? 10 : -5;
+    const over15Prob = Math.max(30, Math.min(95, over15BaseProb + over15Adjustment + (Math.random() * 10 - 5)));
+
+    // Over 2.5 Goals
+    const over25BaseProb = totalGoals >= 3 ? 60 : 35;
+    const over25Adjustment = avgGoals > 3 ? 10 : -5;
+    const over25Prob = Math.max(20, Math.min(90, over25BaseProb + over25Adjustment + (Math.random() * 10 - 5)));
+
+    // Over 3.5 Goals
+    const over35BaseProb = totalGoals >= 4 ? 45 : 25;
+    const over35Adjustment = avgGoals > 3.5 ? 10 : -5;
+    const over35Prob = Math.max(15, Math.min(85, over35BaseProb + over35Adjustment + (Math.random() * 10 - 5)));
+
+    // BTTS (Both Teams To Score)
+    // Consider attacking and defensive stats
+    const homeAvgScored = homeMatches > 0 ? homeTeam.goalsScored / homeMatches : 1;
+    const awayAvgScored = awayMatches > 0 ? awayTeam.goalsScored / awayMatches : 1;
+    const homeAvgConceded = homeMatches > 0 ? homeTeam.goalsConceded / homeMatches : 1;
+    const awayAvgConceded = awayMatches > 0 ? awayTeam.goalsConceded / awayMatches : 1;
+
+    let bttsProb = 45; // Base probability
+
+    if (predictedScore.home > 0 && predictedScore.away > 0) {
+        bttsProb = 60;
+    }
+
+    // Adjust based on attacking prowess
+    if (homeAvgScored > 1.2 && awayAvgScored > 1.2) {
+        bttsProb += 10;
+    }
+
+    // Adjust based on defensive weakness
+    if (homeAvgConceded > 1 && awayAvgConceded > 1) {
+        bttsProb += 5;
+    }
+
+    bttsProb = Math.max(20, Math.min(90, bttsProb + (Math.random() * 10 - 5)));
+
+    // Corners Markets
+    // Average corners per game from team stats
+    const avgCorners = (homeTeam.cornersPerGame + awayTeam.cornersPerGame);
+
+    // Over 6.5 Corners
+    const over65BaseProb = avgCorners >= 7 ? 65 : 45;
+    const over65Prob = Math.max(35, Math.min(90, over65BaseProb + (Math.random() * 10 - 5)));
+
+    // Over 8.5 Corners
+    const over85BaseProb = avgCorners >= 9 ? 55 : 40;
+    const over85Prob = Math.max(25, Math.min(85, over85BaseProb + (Math.random() * 10 - 5)));
+
+    // Over 10.5 Corners
+    const over105BaseProb = avgCorners >= 11 ? 45 : 30;
+    const over105Prob = Math.max(20, Math.min(80, over105BaseProb + (Math.random() * 10 - 5)));
+
+    return {
+        over15Goals: {
+            probability: Math.round(over15Prob * 10) / 10,
+            recommended: over15Prob > 60 && confidence > 65
+        },
+        over25Goals: {
+            probability: Math.round(over25Prob * 10) / 10,
+            recommended: over25Prob > 55 && confidence > 65
+        },
+        over35Goals: {
+            probability: Math.round(over35Prob * 10) / 10,
+            recommended: over35Prob > 45 && confidence > 70
+        },
+        btts: {
+            probability: Math.round(bttsProb * 10) / 10,
+            recommended: bttsProb > 55 && confidence > 65
+        },
+        corners: {
+            over65: {
+                probability: Math.round(over65Prob * 10) / 10,
+                recommended: over65Prob > 60 && confidence > 65
+            },
+            over85: {
+                probability: Math.round(over85Prob * 10) / 10,
+                recommended: over85Prob > 55 && confidence > 65
+            },
+            over105: {
+                probability: Math.round(over105Prob * 10) / 10,
+                recommended: over105Prob > 50 && confidence > 70
+            }
+        }
+    };
+}
 
 /**
  * Generate football team statistics
@@ -150,7 +278,6 @@ function calculateFootballTeamStrength(team: FootballTeam): number {
     return Math.max(0, Math.min(1, strength)); // Clamp between 0 and 1
 }
 
-
 /**
  * Calculate score from form string
  * W = 1 point, D = 0.5 points, L = 0 points
@@ -232,10 +359,18 @@ export function getFootballMatchInsights(
     return insights;
 }
 
+/**
+ * Extended Football Prediction with Betting Markets
+ */
+export interface ExtendedFootballPrediction extends FootballPrediction {
+    bettingMarkets: BettingMarkets;
+}
 
-// Export the SportsAnalytics class
+// Export the SportsAnalytics class with betting markets
+// In lib/analytics.ts - Update the predictMatch method
+
 export class SportsAnalytics {
-    static predictMatch(homeTeam: FootballTeam, awayTeam: FootballTeam): FootballPrediction {
+    static predictMatch(homeTeam: FootballTeam, awayTeam: FootballTeam): ExtendedFootballPrediction {
         const probabilities = calculateFootballWinProbability(homeTeam, awayTeam);
         const predictedScore = predictFootballScore(homeTeam, awayTeam);
         const insights = getFootballMatchInsights(homeTeam, awayTeam);
@@ -243,6 +378,14 @@ export class SportsAnalytics {
         const awayStrength = calculateFootballTeamStrength(awayTeam);
         const strengthDiff = Math.abs(homeStrength - awayStrength);
         const confidence = Math.min(95, Math.round(50 + (strengthDiff * 100)));
+
+        // Calculate betting markets - FIX: Transform the predicted score format
+        const bettingMarkets = calculateBettingMarkets(
+            homeTeam,
+            awayTeam,
+            { home: predictedScore.homeScore, away: predictedScore.awayScore }, // <-- FIX HERE
+            confidence
+        );
 
         return {
             homeWin: probabilities.homeWin,
@@ -253,7 +396,8 @@ export class SportsAnalytics {
                 away: predictedScore.awayScore
             },
             confidence,
-            insights
+            insights,
+            bettingMarkets
         };
     }
 }
