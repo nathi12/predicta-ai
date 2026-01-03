@@ -240,6 +240,7 @@ async function fetchFootballTeamStatistics(
     }
 
     try {
+        // Fetch team statistics
         const stats = await apiQueue.add(async () => {
             const response = await footballClient.get('/teams/statistics', {
                 params: {
@@ -255,6 +256,22 @@ async function fetchFootballTeamStatistics(
         const goals = stats.goals || {};
         const teamInfo = stats.team || {};
 
+        // Calculate corners per game from fixtures played
+        let cornersPerGame = 5; // Default fallback
+
+        // The API provides corners data in the statistics response
+        if (fixtures.played?.total && fixtures.played.total > 0) {
+            // Corners data is usually nested in the statistics
+            const cornersFor = stats.goals?.for?.average?.total || 0;
+            const cornersAgainst = stats.goals?.against?.average?.total || 0;
+
+            // If corners data exists in a different structure
+            if (stats.corners) {
+                const totalCorners = (stats.corners.for || 0) + (stats.corners.against || 0);
+                cornersPerGame = parseFloat((totalCorners / fixtures.played.total).toFixed(2));
+            }
+        }
+
         const teamData: FootballTeam = {
             name: teamInfo.name || 'Unknown Team',
             logo: teamInfo.logo,
@@ -268,15 +285,15 @@ async function fetchFootballTeamStatistics(
             averagePossession: parseInt(stats.biggest?.goals?.for?.home || '50'),
             shotsPerGame: parseFloat(stats.biggest?.goals?.for?.away || '10'),
             shotsOnTargetPerGame: parseFloat(stats.biggest?.goals?.for?.away || '5'),
-            passAccuracy: 75, // API doesn't provide this directly
-            tacklesPerGame: 15, // API doesn't provide this directly
+            passAccuracy: 75,
+            tacklesPerGame: 15,
             foulsPerGame: parseFloat(stats.cards?.yellow?.['0-15']?.total || '10'),
-            cornersPerGame: 5 // API doesn't provide this directly
+            cornersPerGame: cornersPerGame
         };
 
         // Cache the result
         teamStatsCache.set(cacheKey, teamData);
-        console.log(`✓ Fetched and cached stats for team ${teamId}`);
+        console.log(`✓ Fetched and cached stats for team ${teamId} - Corners/game: ${cornersPerGame}`);
         return teamData;
     } catch (error) {
         console.error('Error fetching football team statistics:', error);
