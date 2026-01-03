@@ -84,21 +84,41 @@ export function calculateBettingMarkets(
 
     bttsProb = Math.max(20, Math.min(90, bttsProb + (Math.random() * 10 - 5)));
 
-    // Corners Markets
-    // Average corners per game from team stats
-    const avgCorners = (homeTeam.cornersPerGame + awayTeam.cornersPerGame);
+    // Corners Markets - UPDATED TO USE ACTUAL CORNERS DATA
+    // Total expected corners combining both teams
+    const totalExpectedCorners = homeTeam.cornersPerGame + awayTeam.cornersPerGame;
 
-    // Over 6.5 Corners
-    const over65BaseProb = avgCorners >= 7 ? 65 : 45;
-    const over65Prob = Math.max(35, Math.min(90, over65BaseProb + (Math.random() * 10 - 5)));
+    console.log(`📊 Corners Analysis for ${homeTeam.name} vs ${awayTeam.name}:`);
+    console.log(`   Home corners/game: ${homeTeam.cornersPerGame}`);
+    console.log(`   Away corners/game: ${awayTeam.cornersPerGame}`);
+    console.log(`   Total expected: ${totalExpectedCorners}`);
+
+    // Over 6.5 Corners - More sophisticated calculation
+    let over65BaseProb = 50;
+    if (totalExpectedCorners >= 10) over65BaseProb = 75;
+    else if (totalExpectedCorners >= 8) over65BaseProb = 65;
+    else if (totalExpectedCorners >= 7) over65BaseProb = 55;
+    else if (totalExpectedCorners < 6) over65BaseProb = 35;
+
+    const over65Prob = Math.max(25, Math.min(95, over65BaseProb + (Math.random() * 8 - 4)));
 
     // Over 8.5 Corners
-    const over85BaseProb = avgCorners >= 9 ? 55 : 40;
-    const over85Prob = Math.max(25, Math.min(85, over85BaseProb + (Math.random() * 10 - 5)));
+    let over85BaseProb = 40;
+    if (totalExpectedCorners >= 12) over85BaseProb = 70;
+    else if (totalExpectedCorners >= 10) over85BaseProb = 60;
+    else if (totalExpectedCorners >= 9) over85BaseProb = 50;
+    else if (totalExpectedCorners < 7) over85BaseProb = 25;
+
+    const over85Prob = Math.max(20, Math.min(90, over85BaseProb + (Math.random() * 8 - 4)));
 
     // Over 10.5 Corners
-    const over105BaseProb = avgCorners >= 11 ? 45 : 30;
-    const over105Prob = Math.max(20, Math.min(80, over105BaseProb + (Math.random() * 10 - 5)));
+    let over105BaseProb = 30;
+    if (totalExpectedCorners >= 14) over105BaseProb = 65;
+    else if (totalExpectedCorners >= 12) over105BaseProb = 55;
+    else if (totalExpectedCorners >= 11) over105BaseProb = 45;
+    else if (totalExpectedCorners < 9) over105BaseProb = 20;
+
+    const over105Prob = Math.max(15, Math.min(85, over105BaseProb + (Math.random() * 8 - 4)));
 
     return {
         over15Goals: {

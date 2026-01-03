@@ -224,7 +224,105 @@ export async function fetchUpcomingFootballMatches(
 }
 
 /**
+ * Fetch corners average for a team from recent fixtures
+ * ADD THIS NEW FUNCTION HERE
+ */
+async function fetchTeamCornersAverage(
+    teamId: number,
+    leagueId: number,
+    season: number = 2025
+): Promise<number> {
+    const cornersCacheKey = `corners-${teamId}-${leagueId}-${season}`;
+    const cachedCorners = teamStatsCache.get(cornersCacheKey) as number | null;
+
+    if (cachedCorners !== null) {
+        console.log(`✓ Using cached corners for team ${teamId}: ${cachedCorners}`);
+        return cachedCorners;
+    }
+
+    try {
+        // Fetch last 5 finished matches for this team
+        const fixtures = await apiQueue.add(async () => {
+            const response = await footballClient.get('/fixtures', {
+                params: {
+                    team: teamId,
+                    league: leagueId,
+                    season: season,
+                    last: 5
+                }
+            });
+            return response.data.response;
+        });
+
+        if (!fixtures || fixtures.length === 0) {
+            console.warn(`No fixtures found for team ${teamId}`);
+            return 5; // Default fallback
+        }
+
+        let totalCorners = 0;
+        let matchesWithData = 0;
+
+        // Process each fixture to get corners statistics
+        for (const fixture of fixtures) {
+            // Only process finished matches
+            if (fixture.fixture.status.short !== 'FT') {
+                continue;
+            }
+
+            try {
+                // Fetch detailed statistics for this fixture
+                const fixtureStats = await apiQueue.add(async () => {
+                    const response = await footballClient.get('/fixtures/statistics', {
+                        params: {
+                            fixture: fixture.fixture.id
+                        }
+                    });
+                    return response.data.response;
+                });
+
+                // Find statistics for our team
+                const teamStats = fixtureStats.find((stat: any) => stat.team.id === teamId);
+
+                if (teamStats && teamStats.statistics) {
+                    // Find corner kicks statistic
+                    const cornersData = teamStats.statistics.find(
+                        (s: any) => s.type === 'Corner Kicks'
+                    );
+
+                    if (cornersData && cornersData.value !== null) {
+                        const cornerValue = parseInt(cornersData.value);
+                        if (!isNaN(cornerValue)) {
+                            totalCorners += cornerValue;
+                            matchesWithData++;
+                        }
+                    }
+                }
+            } catch (error) {
+                console.warn(`Failed to fetch statistics for fixture ${fixture.fixture.id}:`, error);
+                // Continue with other fixtures
+            }
+        }
+
+        // Calculate average
+        const average = matchesWithData > 0
+            ? parseFloat((totalCorners / matchesWithData).toFixed(2))
+            : 5;
+
+        console.log(`✓ Calculated corners average for team ${teamId}: ${average} (from ${matchesWithData} matches)`);
+
+        // Cache the result
+        teamStatsCache.set(cornersCacheKey, average as any);
+
+        return average;
+    } catch (error) {
+        console.error(`Error fetching corners average for team ${teamId}:`, error);
+        return 5; // Fallback
+    }
+}
+
+/**
  * Fetch detailed team statistics for football
+ * MODIFY THIS FUNCTION
  */
 async function fetchFootballTeamStatistics(
     teamId: number,
@@ -256,20 +354,13 @@ async function fetchFootballTeamStatistics(
         const goals = stats.goals || {};
         const teamInfo = stats.team || {};
 
-        // Calculate corners per game from fixtures played
-        let cornersPerGame = 5; // Default fallback
-
-        // The API provides corners data in the statistics response
-        if (fixtures.played?.total && fixtures.played.total > 0) {
-            // Corners data is usually nested in the statistics
-            const cornersFor = stats.goals?.for?.average?.total || 0;
-            const cornersAgainst = stats.goals?.against?.average?.total || 0;
-
-            // If corners data exists in a different structure
-            if (stats.corners) {
-                const totalCorners = (stats.corners.for || 0) + (stats.corners.against || 0);
-                cornersPerGame = parseFloat((totalCorners / fixtures.played.total).toFixed(2));
-            }
+        // Fetch real corners data from recent fixtures
+        let cornersPerGame: number;
+        try {
+            cornersPerGame = await fetchTeamCornersAverage(teamId, leagueId, season);
+        } catch (error) {
+            console.warn(`Failed to fetch corners for team ${teamId}, using default`);
+            cornersPerGame = 5;
         }
 
         const teamData: FootballTeam = {
@@ -288,7 +379,7 @@ async function fetchFootballTeamStatistics(
             passAccuracy: 75,
             tacklesPerGame: 15,
             foulsPerGame: parseFloat(stats.cards?.yellow?.['0-15']?.total || '10'),
-            cornersPerGame: cornersPerGame
+            cornersPerGame: cornersPerGame // Now using real data!
         };
 
         // Cache the result
@@ -300,6 +391,8 @@ async function fetchFootballTeamStatistics(
         throw error;
     }
 }
+
+// ... rest of your code remains the same ...
 
 /**
  * Generate default football team stats (fallback)
@@ -372,7 +465,6 @@ export async function transformFootballMatch(apiMatch: any): Promise<FootballMat
         awayTeam,
         date: new Date(apiMatch.fixture.date).toISOString().split('T')[0],
         venue: apiMatch.fixture.venue?.name
-        // Removed 'time' and 'status' properties as they don't exist in FootballMatch type
     };
 }
 
@@ -398,7 +490,7 @@ export async function fetchAllUpcomingMatches(): Promise<{
         // Fetch leagues one at a time
         for (const league of leagues) {
             console.log(`📊 Fetching matches for ${league}...`);
-            const matches = await fetchUpcomingFootballMatches(league, 2025, 5); // Reduced to 5 matches per league
+            const matches = await fetchUpcomingFootballMatches(league, 2025, 5);
             allMatches.push(...matches);
             console.log(`✓ Found ${matches.length} matches for ${league}`);
         }
