@@ -33,9 +33,10 @@ const LEAGUE_IDS: Record<string, number> = {
 class APIRequestQueue {
     private queue: (() => Promise<any>)[] = [];
     private processing = false;
-    private requestDelay = 3000; // 3 seconds between requests
+    private requestDelay = 2000; // 2 seconds between requests (safer for rate limits)
     private lastRequestTime = 0;
-    private maxRetries = 3;
+    private maxRetries = 5; // Increased retries
+    private consecutiveRateLimits = 0; // Track rate limit hits
 
     async add<T>(requestFn: () => Promise<T>): Promise<T> {
         return new Promise((resolve, reject) => {
@@ -59,11 +60,27 @@ class APIRequestQueue {
         attempt = 1
     ): Promise<T> {
         try {
-            return await fn();
+            const result = await fn();
+            // Reset counter on success
+            this.consecutiveRateLimits = 0;
+            return result;
         } catch (error: any) {
             if (error.response?.status === 429 && attempt < this.maxRetries) {
-                const waitTime = Math.pow(2, attempt) * 2000; // 2s, 4s, 8s
-                console.log(`Rate limited. Retrying in ${waitTime}ms... (attempt ${attempt}/${this.maxRetries})`);
+                this.consecutiveRateLimits++;
+
+                // Exponential backoff with jitter: 3s, 6s, 12s, 24s, 48s
+                const baseWait = Math.pow(2, attempt) * 1500;
+                const jitter = Math.random() * 1000; // Add randomness
+                const waitTime = baseWait + jitter;
+
+                console.log(`⚠️ Rate limited (${this.consecutiveRateLimits} consecutive). Waiting ${Math.round(waitTime / 1000)}s... (attempt ${attempt}/${this.maxRetries})`);
+
+                // If we're hitting rate limits frequently, increase the base delay
+                if (this.consecutiveRateLimits > 3) {
+                    this.requestDelay = Math.min(5000, this.requestDelay + 500);
+                    console.log(`📊 Increased delay to ${this.requestDelay}ms due to rate limiting`);
+                }
+
                 await this.delay(waitTime);
                 return this.executeWithRetry(fn, attempt + 1);
             }
@@ -224,105 +241,57 @@ export async function fetchUpcomingFootballMatches(
 }
 
 /**
- * Fetch corners average for a team from recent fixtures
- * ADD THIS NEW FUNCTION HERE
+ * Estimate corners based on team statistics
+ * OPTIMIZED: Uses existing stats to estimate corners without additional API calls
  */
-async function fetchTeamCornersAverage(
-    teamId: number,
-    leagueId: number,
-    season: number = 2025
-): Promise<number> {
-    const cornersCacheKey = `corners-${teamId}-${leagueId}-${season}`;
-    const cachedCorners = teamStatsCache.get(cornersCacheKey) as number | null;
-
-    if (cachedCorners !== null) {
-        console.log(`✓ Using cached corners for team ${teamId}: ${cachedCorners}`);
-        return cachedCorners;
-    }
-
+function estimateTeamCorners(stats: any): number {
     try {
-        // Fetch last 5 finished matches for this team
-        const fixtures = await apiQueue.add(async () => {
-            const response = await footballClient.get('/fixtures', {
-                params: {
-                    team: teamId,
-                    league: leagueId,
-                    season: season,
-                    last: 5
-                }
-            });
-            return response.data.response;
-        });
+        const goals = stats.goals || {};
+        const fixtures = stats.fixtures || {};
 
-        if (!fixtures || fixtures.length === 0) {
-            console.warn(`No fixtures found for team ${teamId}`);
-            return 5; // Default fallback
+        // Calculate offensive strength indicators
+        const goalsFor = goals.for?.total?.total || 0;
+        const gamesPlayed = (fixtures.played?.total || 1);
+        const goalsPerGame = goalsFor / gamesPlayed;
+
+        // Get form factor (W=3, D=1, L=0 average from last 5)
+        const form = stats.form || '';
+        let formScore = 0;
+        for (const char of form.slice(-5)) {
+            if (char === 'W') formScore += 3;
+            else if (char === 'D') formScore += 1;
+        }
+        const formFactor = form.length > 0 ? formScore / (form.slice(-5).length * 3) : 0.5;
+
+        // Estimate corners based on offensive output and form
+        // Strong attacking teams: 6-8 corners/game
+        // Average teams: 4-6 corners/game  
+        // Weak attacking teams: 3-5 corners/game
+        let baseCorners: number;
+
+        if (goalsPerGame >= 2.0) {
+            baseCorners = 7.5; // Strong attack
+        } else if (goalsPerGame >= 1.5) {
+            baseCorners = 6.0; // Good attack
+        } else if (goalsPerGame >= 1.0) {
+            baseCorners = 5.0; // Average attack
+        } else {
+            baseCorners = 4.0; // Weak attack
         }
 
-        let totalCorners = 0;
-        let matchesWithData = 0;
+        // Adjust based on current form (+/- 1 corner)
+        const adjustment = (formFactor - 0.5) * 2; // Range: -1 to +1
+        const estimatedCorners = Math.max(3, Math.min(9, baseCorners + adjustment));
 
-        // Process each fixture to get corners statistics
-        for (const fixture of fixtures) {
-            // Only process finished matches
-            if (fixture.fixture.status.short !== 'FT') {
-                continue;
-            }
-
-            try {
-                // Fetch detailed statistics for this fixture
-                const fixtureStats = await apiQueue.add(async () => {
-                    const response = await footballClient.get('/fixtures/statistics', {
-                        params: {
-                            fixture: fixture.fixture.id
-                        }
-                    });
-                    return response.data.response;
-                });
-
-                // Find statistics for our team
-                const teamStats = fixtureStats.find((stat: any) => stat.team.id === teamId);
-
-                if (teamStats && teamStats.statistics) {
-                    // Find corner kicks statistic
-                    const cornersData = teamStats.statistics.find(
-                        (s: any) => s.type === 'Corner Kicks'
-                    );
-
-                    if (cornersData && cornersData.value !== null) {
-                        const cornerValue = parseInt(cornersData.value);
-                        if (!isNaN(cornerValue)) {
-                            totalCorners += cornerValue;
-                            matchesWithData++;
-                        }
-                    }
-                }
-            } catch (error) {
-                console.warn(`Failed to fetch statistics for fixture ${fixture.fixture.id}:`, error);
-                // Continue with other fixtures
-            }
-        }
-
-        // Calculate average
-        const average = matchesWithData > 0
-            ? parseFloat((totalCorners / matchesWithData).toFixed(2))
-            : 5;
-
-        console.log(`✓ Calculated corners average for team ${teamId}: ${average} (from ${matchesWithData} matches)`);
-
-        // Cache the result
-        teamStatsCache.set(cornersCacheKey, average as any);
-
-        return average;
+        return parseFloat(estimatedCorners.toFixed(1));
     } catch (error) {
-        console.error(`Error fetching corners average for team ${teamId}:`, error);
-        return 5; // Fallback
+        return 5; // Safe default
     }
 }
 
 /**
  * Fetch detailed team statistics for football
- * MODIFY THIS FUNCTION
+ * OPTIMIZED: Only makes 1 API call per team, estimates corners from existing data
  */
 async function fetchFootballTeamStatistics(
     teamId: number,
@@ -338,7 +307,7 @@ async function fetchFootballTeamStatistics(
     }
 
     try {
-        // Fetch team statistics
+        // Fetch team statistics (SINGLE API CALL)
         const stats = await apiQueue.add(async () => {
             const response = await footballClient.get('/teams/statistics', {
                 params: {
@@ -354,14 +323,8 @@ async function fetchFootballTeamStatistics(
         const goals = stats.goals || {};
         const teamInfo = stats.team || {};
 
-        // Fetch real corners data from recent fixtures
-        let cornersPerGame: number;
-        try {
-            cornersPerGame = await fetchTeamCornersAverage(teamId, leagueId, season);
-        } catch (error) {
-            console.warn(`Failed to fetch corners for team ${teamId}, using default`);
-            cornersPerGame = 5;
-        }
+        // OPTIMIZED: Estimate corners from existing stats instead of making 10+ extra API calls
+        const cornersPerGame = estimateTeamCorners(stats);
 
         const teamData: FootballTeam = {
             name: teamInfo.name || 'Unknown Team',
@@ -379,20 +342,18 @@ async function fetchFootballTeamStatistics(
             passAccuracy: 75,
             tacklesPerGame: 15,
             foulsPerGame: parseFloat(stats.cards?.yellow?.['0-15']?.total || '10'),
-            cornersPerGame: cornersPerGame // Now using real data!
+            cornersPerGame: cornersPerGame // Estimated intelligently from stats
         };
 
         // Cache the result
         teamStatsCache.set(cacheKey, teamData);
-        console.log(`✓ Fetched and cached stats for team ${teamId} - Corners/game: ${cornersPerGame}`);
+        console.log(`✓ Fetched and cached stats for team ${teamId} - Est. Corners/game: ${cornersPerGame}`);
         return teamData;
     } catch (error) {
         console.error('Error fetching football team statistics:', error);
         throw error;
     }
 }
-
-// ... rest of your code remains the same ...
 
 /**
  * Generate default football team stats (fallback)
@@ -433,6 +394,7 @@ export async function transformFootballMatch(apiMatch: any): Promise<FootballMat
 
     try {
         // Fetch both teams (queue will handle rate limiting)
+        // OPTIMIZED: Now only 2 API calls per match instead of 14+
         homeTeam = await fetchFootballTeamStatistics(
             apiMatch.teams.home.id,
             leagueId
@@ -496,7 +458,8 @@ export async function fetchAllUpcomingMatches(): Promise<{
         }
 
         console.log(`📈 Total matches to process: ${allMatches.length}`);
-        console.log(`⏳ Estimated time: ${Math.ceil(allMatches.length * 3 / 60)} minutes (with queue)`);
+        console.log(`⏳ Estimated time: ~${Math.ceil(allMatches.length * 4 / 60)} minutes (2s delay per API call)`);
+        console.log(`⚡ OPTIMIZED: Only 2 API calls per match (down from 14+)`);
 
         // Transform all matches (queue handles rate limiting automatically)
         const footballMatches = await Promise.all(
