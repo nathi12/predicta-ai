@@ -493,7 +493,8 @@ export async function fetchAllUpcomingMatches(): Promise<{
             'Premier League',
             'La Liga',
             'Serie A',
-            'Bundesliga'
+            'Bundesliga',
+            'Eredivisie'
         ];
 
         console.log(`📊 Fetching ${leagues.length} leagues:`, leagues.join(', '));

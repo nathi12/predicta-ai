@@ -53,51 +53,61 @@ export function calculateBettingMarkets(
     console.log(`   Home avg: ${homeAvgGoalsScored.toFixed(2)} scored, ${homeAvgGoalsConceded.toFixed(2)} conceded`);
     console.log(`   Away avg: ${awayAvgGoalsScored.toFixed(2)} scored, ${awayAvgGoalsConceded.toFixed(2)} conceded`);
 
-    // Over 1.5 Goals - More accurate with real data
-    let over15Prob = 50;
-    if (expectedTotalGoals >= 3.0) over15Prob = 85;
-    else if (expectedTotalGoals >= 2.5) over15Prob = 75;
-    else if (expectedTotalGoals >= 2.0) over15Prob = 65;
-    else if (expectedTotalGoals >= 1.5) over15Prob = 55;
-    else over15Prob = 40;
+    // Over 1.5 Goals - Continuous probability based on expected goals
+    // Using Poisson distribution approximation
+    let over15Prob = 30; // Base minimum
 
-    // Over 2.5 Goals
-    let over25Prob = 50;
-    if (expectedTotalGoals >= 3.5) over25Prob = 75;
-    else if (expectedTotalGoals >= 3.0) over25Prob = 65;
-    else if (expectedTotalGoals >= 2.5) over25Prob = 55;
-    else if (expectedTotalGoals >= 2.0) over25Prob = 45;
-    else over25Prob = 30;
-
-    // Over 3.5 Goals
-    let over35Prob = 40;
-    if (expectedTotalGoals >= 4.0) over35Prob = 65;
-    else if (expectedTotalGoals >= 3.5) over35Prob = 55;
-    else if (expectedTotalGoals >= 3.0) over35Prob = 45;
-    else if (expectedTotalGoals >= 2.5) over35Prob = 35;
-    else over35Prob = 25;
-
-    // BTTS (Both Teams To Score) - Using REAL attacking/defensive data
-    let bttsProb = 45;
-
-    // Both teams have good attacking records
-    if (homeAvgGoalsScored >= 1.5 && awayAvgGoalsScored >= 1.5) {
-        bttsProb += 15;
-    } else if (homeAvgGoalsScored >= 1.2 && awayAvgGoalsScored >= 1.2) {
-        bttsProb += 10;
-    } else if (homeAvgGoalsScored < 0.8 || awayAvgGoalsScored < 0.8) {
-        bttsProb -= 10;
+    if (expectedTotalGoals >= 1.5) {
+        // Sigmoid-like curve for smooth probability increase
+        const goalFactor = (expectedTotalGoals - 1.5) / 2.0; // 0 at 1.5 goals, 1 at 3.5 goals
+        over15Prob = 30 + (65 * Math.min(1, goalFactor)); // 30% to 95% range
     }
 
-    // Both teams have weak defenses
-    if (homeAvgGoalsConceded >= 1.5 && awayAvgGoalsConceded >= 1.5) {
-        bttsProb += 10;
-    } else if (homeAvgGoalsConceded >= 1.2 && awayAvgGoalsConceded >= 1.2) {
+    over15Prob = Math.max(25, Math.min(95, over15Prob));
+
+    // Over 2.5 Goals - Continuous probability
+    let over25Prob = 20; // Base minimum
+
+    if (expectedTotalGoals >= 2.5) {
+        const goalFactor = (expectedTotalGoals - 2.5) / 2.0; // 0 at 2.5 goals, 1 at 4.5 goals
+        over25Prob = 20 + (70 * Math.min(1, goalFactor)); // 20% to 90% range
+    }
+
+    over25Prob = Math.max(15, Math.min(90, over25Prob));
+
+    // Over 3.5 Goals - Continuous probability
+    let over35Prob = 15; // Base minimum
+
+    if (expectedTotalGoals >= 3.5) {
+        const goalFactor = (expectedTotalGoals - 3.5) / 2.0; // 0 at 3.5 goals, 1 at 5.5 goals
+        over35Prob = 15 + (70 * Math.min(1, goalFactor)); // 15% to 85% range
+    }
+
+    over35Prob = Math.max(10, Math.min(85, over35Prob));
+
+    // BTTS (Both Teams To Score) - Continuous probability calculation
+    let bttsProb = 35; // Base probability
+
+    // Factor 1: Both teams' attacking strength (0 to 1 scale)
+    const homeAttackFactor = Math.min(1, homeAvgGoalsScored / 2.0); // 0 at 0 goals, 1 at 2+ goals/game
+    const awayAttackFactor = Math.min(1, awayAvgGoalsScored / 2.0);
+    const combinedAttackStrength = (homeAttackFactor + awayAttackFactor) / 2;
+
+    // Factor 2: Both teams' defensive weakness (0 to 1 scale)
+    const homeDefenseWeakness = Math.min(1, homeAvgGoalsConceded / 2.0);
+    const awayDefenseWeakness = Math.min(1, awayAvgGoalsConceded / 2.0);
+    const combinedDefenseWeakness = (homeDefenseWeakness + awayDefenseWeakness) / 2;
+
+    // Calculate BTTS probability (35% to 85% range)
+    bttsProb = 35 + (combinedAttackStrength * 25) + (combinedDefenseWeakness * 25);
+
+    // Bonus if both teams score consistently (>1 goal/game each)
+    if (homeAvgGoalsScored > 1.0 && awayAvgGoalsScored > 1.0) {
         bttsProb += 5;
     }
 
-    // Strong defense reduces BTTS chance
-    if (homeAvgGoalsConceded < 0.8 || awayAvgGoalsConceded < 0.8) {
+    // Penalty if either team has very strong defense (<0.6 conceded/game)
+    if (homeAvgGoalsConceded < 0.6 || awayAvgGoalsConceded < 0.6) {
         bttsProb -= 10;
     }
 
@@ -113,35 +123,35 @@ export function calculateBettingMarkets(
     console.log(`   Away corners/game: ${awayTeam.cornersPerGame}`);
     console.log(`   Total expected: ${totalExpectedCorners.toFixed(1)}`);
 
-    // Over 6.5 Corners - Refined calculation
-    let over65Prob = 50;
-    if (totalExpectedCorners >= 12) over65Prob = 85;
-    else if (totalExpectedCorners >= 11) over65Prob = 75;
-    else if (totalExpectedCorners >= 10) over65Prob = 70;
-    else if (totalExpectedCorners >= 9) over65Prob = 65;
-    else if (totalExpectedCorners >= 8) over65Prob = 60;
-    else if (totalExpectedCorners >= 7) over65Prob = 55;
-    else if (totalExpectedCorners >= 6) over65Prob = 45;
-    else over65Prob = 35;
+    // Over 6.5 Corners - Continuous calculation
+    let over65Prob = 25; // Base minimum
 
-    // Over 8.5 Corners
-    let over85Prob = 40;
-    if (totalExpectedCorners >= 13) over85Prob = 75;
-    else if (totalExpectedCorners >= 12) over85Prob = 70;
-    else if (totalExpectedCorners >= 11) over85Prob = 65;
-    else if (totalExpectedCorners >= 10) over85Prob = 60;
-    else if (totalExpectedCorners >= 9) over85Prob = 50;
-    else if (totalExpectedCorners >= 8) over85Prob = 40;
-    else over85Prob = 30;
+    if (totalExpectedCorners >= 6.5) {
+        const cornerFactor = (totalExpectedCorners - 6.5) / 6.0; // 0 at 6.5, 1 at 12.5 corners
+        over65Prob = 25 + (70 * Math.min(1, cornerFactor)); // 25% to 95% range
+    }
 
-    // Over 10.5 Corners
-    let over105Prob = 30;
-    if (totalExpectedCorners >= 14) over105Prob = 70;
-    else if (totalExpectedCorners >= 13) over105Prob = 65;
-    else if (totalExpectedCorners >= 12) over105Prob = 60;
-    else if (totalExpectedCorners >= 11) over105Prob = 50;
-    else if (totalExpectedCorners >= 10) over105Prob = 40;
-    else over105Prob = 25;
+    over65Prob = Math.max(20, Math.min(95, over65Prob));
+
+    // Over 8.5 Corners - Continuous calculation
+    let over85Prob = 20; // Base minimum
+
+    if (totalExpectedCorners >= 8.5) {
+        const cornerFactor = (totalExpectedCorners - 8.5) / 5.5; // 0 at 8.5, 1 at 14 corners
+        over85Prob = 20 + (70 * Math.min(1, cornerFactor)); // 20% to 90% range
+    }
+
+    over85Prob = Math.max(15, Math.min(90, over85Prob));
+
+    // Over 10.5 Corners - Continuous calculation
+    let over105Prob = 15; // Base minimum
+
+    if (totalExpectedCorners >= 10.5) {
+        const cornerFactor = (totalExpectedCorners - 10.5) / 5.0; // 0 at 10.5, 1 at 15.5 corners
+        over105Prob = 15 + (70 * Math.min(1, cornerFactor)); // 15% to 85% range
+    }
+
+    over105Prob = Math.max(10, Math.min(85, over105Prob));
 
     return {
         over15Goals: {
