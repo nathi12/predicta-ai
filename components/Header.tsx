@@ -38,7 +38,7 @@ export const Header: React.FC = () => {
                                 }}
                                 className="gradient-text"
                             >
-                                PREDICTIQ
+                                PREDICTA AI
                             </h1>
                             <p
                                 style={{

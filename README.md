@@ -6,6 +6,10 @@ An AI-powered football prediction platform providing data-driven betting market 
 
 PredictaAI is a comprehensive football analytics platform that generates intelligent predictions for various betting markets using real-time match data, team statistics, and sophisticated algorithms. The platform delivers predictions with confidence scores and probability assessments across multiple betting markets.
 
+## PredictaAI Link
+
+[PredictaAI](https://predicta-ai-tpke.vercel.app/)
+
 ### Key Features
 
 - **Multi-League Coverage**: Premier League, La Liga, Serie A, Bundesliga, and Eredivisie
