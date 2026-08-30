@@ -4,6 +4,7 @@
 
 import 'server-only';
 import { store } from '@/lib/kv';
+import { hasApiFootball } from '@/lib/env';
 import { log } from '@/lib/log';
 import { LEAGUES, LEAGUE_CODES } from '@/lib/leagues';
 import {
@@ -16,7 +17,7 @@ import {
 } from '@/services/footballData';
 import {
     budgetRemaining,
-    getFixtureIndex,
+    getFixturesByDate,
     getFixtureInsight,
     normalizeTeam,
     type ApiFootballInsight,
@@ -39,6 +40,8 @@ const WINDOW_DAYS = 10;
 const H2H_LIMIT_PER_BUILD = 6;
 const H2H_HOURS_AHEAD = 60;
 const ENRICH_HOURS_AHEAD = 72;
+/** Resolve the API-Football fixture id this far out so the slip builder can price odds. */
+const AF_ID_HOURS_AHEAD = 120;
 
 const isoDate = (d: Date) => d.toISOString().slice(0, 10);
 
@@ -245,11 +248,21 @@ async function assemble(): Promise<MatchWithPrediction[]> {
             h2hBudget--;
         }
 
+        // Resolve the API-Football fixture id for near-term fixtures — the slip
+        // builder needs it to fetch odds, whether or not this fixture is enriched.
+        // Gated on a healthy budget; it shares the cached fixture index enrich uses.
+        let apiFootballFixtureId: number | undefined;
+        if (hasApiFootball() && afBudget >= 2 && hoursAhead > 0 && hoursAhead <= AF_ID_HOURS_AHEAD) {
+            apiFootballFixtureId = await resolveApiFootballFixtureId(fx);
+        }
+
         let dataQuality: EnrichedMatch['dataQuality'] = 'core';
         let providerOutcome: EnrichedMatch['providerOutcome'];
 
         if (afBudget >= 2 && hoursAhead > 0 && hoursAhead <= ENRICH_HOURS_AHEAD) {
-            const insight = await enrich(bundle.code, cfg.apiFootballId, cfg.season, fx);
+            const insight = apiFootballFixtureId
+                ? await getFixtureInsight(apiFootballFixtureId).catch(() => null)
+                : await enrich(bundle.code, fx);
             if (insight) {
                 afBudget -= 2;
                 dataQuality = 'enriched';
@@ -262,6 +275,7 @@ async function assemble(): Promise<MatchWithPrediction[]> {
         const match: EnrichedMatch = {
             id: `${bundle.code}-${fx.id}`,
             footballDataId: fx.id,
+            apiFootballFixtureId,
             league: bundle.code,
             leagueName: cfg.name,
             kickoff: fx.utcDate,
@@ -285,22 +299,31 @@ async function assemble(): Promise<MatchWithPrediction[]> {
     return out;
 }
 
-async function enrich(
-    code: LeagueCode,
-    leagueId: number,
-    season: number,
-    fx: FDMatch,
-): Promise<ApiFootballInsight | null> {
+/** Match a Football-Data fixture to its API-Football id via the by-date index. */
+async function resolveApiFootballFixtureId(fx: FDMatch): Promise<number | undefined> {
     try {
         const day = fx.utcDate.slice(0, 10);
-        const from = day;
-        const to = new Date(new Date(day).getTime() + 2 * 86_400_000).toISOString().slice(0, 10);
-        const index = await getFixtureIndex(leagueId, season, from, to);
-        const key = `${normalizeTeam(fx.homeTeam.name)}|${day}`;
-        const fixtureId =
-            index[key] ??
-            index[`${normalizeTeam(fx.homeTeam.shortName || fx.homeTeam.name)}|${day}`];
-        if (!fixtureId) return null;
+        const index = await getFixturesByDate(day);
+        const h = normalizeTeam(fx.homeTeam.name);
+        const hs = normalizeTeam(fx.homeTeam.shortName || fx.homeTeam.name);
+        const a = normalizeTeam(fx.awayTeam.name);
+        const as = normalizeTeam(fx.awayTeam.shortName || fx.awayTeam.name);
+        return (
+            index[`${h}|${a}|${day}`] ??
+            index[`${hs}|${as}|${day}`] ??
+            index[`${h}|${as}|${day}`] ??
+            index[`${hs}|${a}|${day}`]
+        );
+    } catch (err) {
+        log.warn('api-football fixture id lookup failed', (err as Error).message);
+        return undefined;
+    }
+}
+
+async function enrich(code: LeagueCode, fx: FDMatch): Promise<ApiFootballInsight | null> {
+    const fixtureId = await resolveApiFootballFixtureId(fx);
+    if (!fixtureId) return null;
+    try {
         return await getFixtureInsight(fixtureId);
     } catch (err) {
         log.warn(`enrich ${code} failed`, (err as Error).message);
@@ -320,8 +343,8 @@ function applyInsight(home: TeamStrength, away: TeamStrength, insight: ApiFootba
     if (Number.isFinite(insight.away.recentFor)) away.enriched = sideToEnrichment(insight.away);
 }
 
-const CACHE_KEY = 'matches:v4';
-const STALE_KEY = 'matches:v4:stale';
+const CACHE_KEY = 'matches:v6';
+const STALE_KEY = 'matches:v6:stale';
 
 // In-process single-flight: concurrent callers on one instance share one build.
 const globalForFlight = globalThis as unknown as {

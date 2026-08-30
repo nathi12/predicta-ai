@@ -17,6 +17,12 @@ export function SiteHeader() {
                         Fixtures
                     </Link>
                     <Link
+                        href="/slip"
+                        className="rounded-md px-2.5 py-1.5 text-text-dim transition-colors hover:text-text"
+                    >
+                        Bet slip
+                    </Link>
+                    <Link
                         href="/accuracy"
                         className="rounded-md px-2.5 py-1.5 text-text-dim transition-colors hover:text-text"
                     >

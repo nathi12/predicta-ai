@@ -9,10 +9,15 @@
 // A hard counter in KV stops us before the provider does.
 
 import 'server-only';
-import { API_FOOTBALL_KEY, RAPIDAPI_KEY, hasApiFootball } from '@/lib/env';
+import {
+    API_FOOTBALL_BOOKMAKER_ID,
+    API_FOOTBALL_KEY,
+    RAPIDAPI_KEY,
+    hasApiFootball,
+} from '@/lib/env';
 import { cached, store } from '@/lib/kv';
 import { log } from '@/lib/log';
-import type { HeadToHead } from '@/types';
+import type { FixtureOdds, HeadToHead } from '@/types';
 
 // Direct API-Sports access (current season on the free tier) is preferred;
 // RapidAPI is the fallback (free plan = seasons 2021-2023 only).
@@ -24,6 +29,7 @@ const AUTH_HEADERS: Record<string, string> = DIRECT
     ? { 'x-apisports-key': API_FOOTBALL_KEY }
     : { 'x-rapidapi-key': RAPIDAPI_KEY, 'x-rapidapi-host': 'api-football-v1.p.rapidapi.com' };
 const DAILY_BUDGET = 90;
+const PER_MINUTE_LIMIT = 9; // free plan allows ~10/min; keep one of headroom
 
 function today(): string {
     return new Date().toISOString().slice(0, 10);
@@ -39,6 +45,21 @@ async function spend(): Promise<boolean> {
     return true;
 }
 
+/**
+ * Hold under the free plan's per-minute cap. Shared across serverless
+ * invocations via KV, like the football-data guard. Waits out the current
+ * minute at most once; a far-over burst proceeds and is left to 429 (caught).
+ */
+async function acquireMinuteSlot(): Promise<void> {
+    const minute = Math.floor(Date.now() / 60_000);
+    const count = await store.incr(`af:rl:${minute}`, 120);
+    if (count <= PER_MINUTE_LIMIT) return;
+    if (count > PER_MINUTE_LIMIT + 20) return;
+    const waitMs = Math.min(11_000, (minute + 1) * 60_000 - Date.now() + 250);
+    log.warn(`api-football per-minute limit, waiting ${waitMs}ms`);
+    await new Promise((r) => setTimeout(r, waitMs));
+}
+
 export async function budgetRemaining(): Promise<number> {
     const used = (await store.get<number>(`af:calls:${today()}`)) ?? 0;
     return Math.max(0, DAILY_BUDGET - used);
@@ -47,11 +68,12 @@ export async function budgetRemaining(): Promise<number> {
 async function afGet<T>(pathname: string): Promise<T | null> {
     if (!hasApiFootball()) return null;
     if (!(await spend())) return null;
+    await acquireMinuteSlot();
     try {
         const res = await fetch(`${BASE}${pathname}`, {
             headers: AUTH_HEADERS,
             next: { revalidate: 6 * 60 * 60 },
-            signal: AbortSignal.timeout(12_000),
+            signal: AbortSignal.timeout(15_000),
         });
         if (!res.ok) {
             log.warn(`api-football ${res.status} on ${pathname}`);
@@ -80,27 +102,33 @@ export function normalizeTeam(name: string): string {
 
 interface AFFixture {
     fixture: { id: number; date: string };
+    league?: { id: number };
     teams: { home: { name: string }; away: { name: string } };
 }
 
-/** Map of `${normHome}|${yyyy-mm-dd}` -> API-Football fixture id for a league window. */
-export async function getFixtureIndex(
-    leagueId: number,
-    season: number,
-    from: string,
-    to: string,
-): Promise<Record<string, number>> {
-    const key = `af:fixtures:${leagueId}:${from}:${to}`;
+/** API-Football league ids for the competitions we cover — keeps the index small. */
+const COVERED_AF_LEAGUE_IDS = new Set([39, 140, 135, 78, 61, 88]);
+
+/**
+ * Map of `${normHome}|${normAway}|${yyyy-mm-dd}` -> API-Football fixture id for
+ * one calendar day, restricted to the leagues we cover.
+ *
+ * Uses `/fixtures?date=` with no `season` param: the free plan rejects
+ * `league`+`season` fixture queries for the current season ("Free plans do not
+ * have access to this season"), but the by-date endpoint works.
+ */
+export async function getFixturesByDate(date: string): Promise<Record<string, number>> {
+    const key = `af:fixtures:date:${date}`;
     const hit = await store.get<Record<string, number>>(key);
     if (hit) return hit;
 
-    const data = await afGet<{ response: AFFixture[] }>(
-        `/fixtures?league=${leagueId}&season=${season}&from=${from}&to=${to}`,
-    );
+    const data = await afGet<{ response: AFFixture[] }>(`/fixtures?date=${date}`);
     const index: Record<string, number> = {};
     for (const f of data?.response ?? []) {
+        if (f.league?.id && !COVERED_AF_LEAGUE_IDS.has(f.league.id)) continue;
         const day = f.fixture.date.slice(0, 10);
-        index[`${normalizeTeam(f.teams.home.name)}|${day}`] = f.fixture.id;
+        const k = `${normalizeTeam(f.teams.home.name)}|${normalizeTeam(f.teams.away.name)}|${day}`;
+        index[k] = f.fixture.id;
     }
     await store.set(key, index, 6 * 60 * 60);
     return index;
@@ -197,4 +225,137 @@ interface LastFive {
         for?: { average?: string };
         against?: { average?: string };
     };
+}
+
+// --- odds --------------------------------------------------------------
+//
+// The bet-slip builder prices its selections against real bookmaker odds from
+// API-Football's `/odds` endpoint. Pre-match odds only exist for near-term
+// fixtures and `/odds` is restricted/low-limit on the free tier, so callers
+// fetch sparingly and degrade to fair odds (1 / model probability) on null.
+
+/** API-Football bookmaker id to prefer (e.g. Betway), or 0 for a consensus. */
+const PREFERRED_BOOKMAKER_ID = Number(API_FOOTBALL_BOOKMAKER_ID) || 0;
+
+type OddsMarketKey = keyof FixtureOdds['markets'];
+
+interface AFOddsValue {
+    value: string;
+    odd: string;
+}
+interface AFOddsBet {
+    id: number;
+    name: string;
+    values: AFOddsValue[];
+}
+interface AFOddsBookmaker {
+    id: number;
+    name: string;
+    bets: AFOddsBet[];
+}
+interface AFOddsFixture {
+    fixture: { id: number };
+    bookmakers: AFOddsBookmaker[];
+}
+
+const normOddValue = (s: string): string => s.toLowerCase().replace(/\s+/g, ' ').trim();
+
+/** Median of a numeric list (undefined for empty). */
+function median(xs: number[]): number | undefined {
+    if (xs.length === 0) return undefined;
+    const s = [...xs].sort((a, b) => a - b);
+    const mid = s.length >> 1;
+    return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+/** How each market we use maps to an API-Football (bet-name-matcher, value-label) pair. */
+const ODDS_MAP: Array<{ key: OddsMarketKey; bet: (b: AFOddsBet) => boolean; value: string }> = [
+    { key: 'home', bet: (b) => b.id === 1, value: 'home' },
+    { key: 'draw', bet: (b) => b.id === 1, value: 'draw' },
+    { key: 'away', bet: (b) => b.id === 1, value: 'away' },
+    { key: 'over15', bet: (b) => b.id === 5, value: 'over 1.5' },
+    { key: 'over25', bet: (b) => b.id === 5, value: 'over 2.5' },
+    { key: 'over35', bet: (b) => b.id === 5, value: 'over 3.5' },
+    { key: 'btts', bet: (b) => b.id === 8, value: 'yes' },
+    { key: 'bttsNo', bet: (b) => b.id === 8, value: 'no' },
+    { key: 'dc1x', bet: (b) => b.id === 12, value: 'home/draw' },
+    { key: 'dc12', bet: (b) => b.id === 12, value: 'home/away' },
+    { key: 'dcx2', bet: (b) => b.id === 12, value: 'draw/away' },
+    {
+        key: 'corners95',
+        bet: (b) => /corner/i.test(b.name) && /over.?\/?.?under/i.test(b.name),
+        value: 'over 9.5',
+    },
+    {
+        key: 'corners105',
+        bet: (b) => /corner/i.test(b.name) && /over.?\/?.?under/i.test(b.name),
+        value: 'over 10.5',
+    },
+];
+
+function parseBookmaker(bm: AFOddsBookmaker): FixtureOdds['markets'] {
+    const out: FixtureOdds['markets'] = {};
+    for (const { key, bet, value } of ODDS_MAP) {
+        const b = bm.bets.find(bet);
+        const v = b?.values.find((x) => normOddValue(x.value) === value);
+        const odd = v ? parseFloat(v.odd) : NaN;
+        if (Number.isFinite(odd) && odd > 1) out[key] = odd;
+    }
+    return out;
+}
+
+async function fetchFixtureOdds(fixtureId: number): Promise<FixtureOdds | null> {
+    const data = await afGet<{ response: AFOddsFixture[] }>(`/odds?fixture=${fixtureId}`);
+    const books = data?.response?.[0]?.bookmakers ?? [];
+    if (books.length === 0) return null;
+
+    const preferred =
+        PREFERRED_BOOKMAKER_ID > 0 ? books.find((b) => b.id === PREFERRED_BOOKMAKER_ID) : undefined;
+
+    if (preferred) {
+        const markets = parseBookmaker(preferred);
+        if (Object.keys(markets).length > 0) {
+            return {
+                fixtureId,
+                source: 'book',
+                bookmaker: preferred.name,
+                fetchedAt: new Date().toISOString(),
+                markets,
+            } satisfies FixtureOdds;
+        }
+        // Preferred book quoted nothing we use — fall through to consensus.
+    }
+
+    // Consensus: median odd per market across every bookmaker that quotes it.
+    const parsed = books.map(parseBookmaker);
+    const markets: FixtureOdds['markets'] = {};
+    for (const { key } of ODDS_MAP) {
+        const m = median(parsed.map((p) => p[key]).filter((v): v is number => typeof v === 'number'));
+        if (m !== undefined) markets[key] = Math.round(m * 100) / 100;
+    }
+    if (Object.keys(markets).length === 0) return null;
+    return {
+        fixtureId,
+        source: 'consensus',
+        bookmaker: null,
+        fetchedAt: new Date().toISOString(),
+        markets,
+    } satisfies FixtureOdds;
+}
+
+/**
+ * Pre-match odds for a fixture, distilled to the markets the slip builder uses.
+ * Prefers `PREFERRED_BOOKMAKER_ID`; otherwise a per-market median across books.
+ * Negative results are cached too — `/odds` calls are the scarcest budget we have.
+ */
+export async function getFixtureOdds(fixtureId: number): Promise<FixtureOdds | null> {
+    const key = `af:odds:${fixtureId}`;
+    const hit = await store.get<FixtureOdds | { none: true }>(key);
+    if (hit) return 'none' in hit ? null : hit;
+
+    const result = await fetchFixtureOdds(fixtureId);
+    // 6h — odds drift but the free plan's 100/day budget won't stretch to
+    // refreshing every fixture more often; a stale-ish price still beats none.
+    await store.set(key, result ?? { none: true }, 6 * 60 * 60);
+    return result;
 }

@@ -27,6 +27,14 @@ export const RAPIDAPI_KEY = read('RAPIDAPI_KEY', 'NEXT_PUBLIC_RAPID_API_KEY');
  */
 export const API_FOOTBALL_KEY = read('API_FOOTBALL_KEY', 'API_SPORTS_KEY');
 
+/**
+ * Optional API-Football bookmaker id (from `GET /odds/bookmakers`) that the
+ * bet-slip builder should price against — e.g. Betway. Unset ⇒ the builder uses
+ * a consensus (median across books). Live odds require a direct
+ * `API_FOOTBALL_KEY`; the RapidAPI free plan has no current-season odds.
+ */
+export const API_FOOTBALL_BOOKMAKER_ID = read('API_FOOTBALL_BOOKMAKER_ID');
+
 /** Shared secret required to trigger the grading cron route. */
 export const CRON_SECRET = read('CRON_SECRET');
 

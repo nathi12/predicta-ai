@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { getRollingStats, recentResults } from '@/lib/tracking';
+import { getSlipStats, recentSlips } from '@/lib/slipTracking';
 import { AccuracyDashboard } from '@/components/AccuracyDashboard';
 
 export const metadata: Metadata = {
@@ -10,7 +11,12 @@ export const metadata: Metadata = {
 export const dynamic = 'force-dynamic';
 
 export default async function AccuracyPage() {
-    const [stats, recent] = await Promise.all([getRollingStats(), recentResults(20)]);
+    const [stats, recent, slipStats, slipsRecent] = await Promise.all([
+        getRollingStats(),
+        recentResults(20),
+        getSlipStats(),
+        recentSlips(12),
+    ]);
 
     return (
         <div className="space-y-6">
@@ -22,7 +28,12 @@ export default async function AccuracyPage() {
                 </p>
             </header>
 
-            <AccuracyDashboard stats={stats} recent={recent} />
+            <AccuracyDashboard
+                stats={stats}
+                recent={recent}
+                slipStats={slipStats}
+                slipsRecent={slipsRecent}
+            />
         </div>
     );
 }

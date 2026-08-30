@@ -208,3 +208,91 @@ export interface RollingStats {
     calibration: Array<{ bin: number; predicted: number; actual: number; n: number }>;
     byLeague: Partial<Record<LeagueCode, MarketStat>>;
 }
+
+// ---------------------------------------------------------------------------
+// Bet-slip builder
+// ---------------------------------------------------------------------------
+
+/** Bookmaker odds for a fixture, distilled to the markets the slip builder uses. */
+export interface FixtureOdds {
+    fixtureId: number;
+    /** 'book' = the configured preferred bookmaker; 'consensus' = median of books. */
+    source: 'book' | 'consensus';
+    /** Human-readable bookmaker name when source is 'book'. */
+    bookmaker: string | null;
+    fetchedAt: string;
+    /** Decimal odds, keyed by the same market ids the slip builder uses. */
+    markets: Partial<
+        Record<
+            | 'home'
+            | 'draw'
+            | 'away'
+            | 'dc1x'
+            | 'dcx2'
+            | 'dc12'
+            | 'over15'
+            | 'over25'
+            | 'over35'
+            | 'btts'
+            | 'bttsNo'
+            | 'corners95'
+            | 'corners105',
+            number
+        >
+    >;
+}
+
+/** One leg of a curated slip, as persisted for later grading. */
+export interface SlipLeg {
+    matchId: string;
+    league: LeagueCode;
+    kickoff: string;
+    home: string;
+    away: string;
+    /** SlipMarket id (see lib/slip/types.ts). */
+    market: string;
+    pick: string;
+    modelProbability: number;
+    bookOdds: number | null;
+    oddsSource: 'book' | 'consensus' | 'model';
+}
+
+/** A curated slip as persisted when it's first shown. */
+export interface SlipRecord {
+    slipId: string;
+    presetId: string;
+    mode: 'target-odds' | 'single-market';
+    legs: SlipLeg[];
+    combinedModelProbability: number;
+    combinedFairOdds: number;
+    combinedBookOdds: number | null;
+    modelVersion: string;
+    createdAt: string;
+}
+
+export interface GradedSlip {
+    slipId: string;
+    presetId: string;
+    gradedAt: string;
+    legResults: Array<{ matchId: string; pick: string; hit: boolean }>;
+    /** Every leg hit. */
+    won: boolean;
+    combinedBookOdds: number | null;
+    /** Return per 1 unit staked: the combined odds if won, else 0. */
+    payoutMultiple: number;
+}
+
+export interface SlipMarketStat {
+    n: number;
+    won: number;
+    /** Units staked (1 per slip). */
+    staked: number;
+    /** Units returned (payoutMultiple summed). */
+    returned: number;
+}
+
+export interface SlipRollingStats {
+    updatedAt: string;
+    overall: SlipMarketStat;
+    byPreset: Record<string, SlipMarketStat>;
+}

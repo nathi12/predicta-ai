@@ -59,7 +59,7 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
     { value: 'corners105', label: 'Corners 10.5' },
 ];
 
-function SegGroup<T extends string>({
+export function SegGroup<T extends string>({
     legend,
     value,
     options,

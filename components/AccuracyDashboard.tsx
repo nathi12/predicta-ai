@@ -1,10 +1,38 @@
-import type { GradedResult, RollingStats, TrackedPrediction } from '@/types';
+import type {
+    GradedResult,
+    GradedSlip,
+    RollingStats,
+    SlipRecord,
+    SlipRollingStats,
+    TrackedPrediction,
+} from '@/types';
 import { LEAGUES } from '@/lib/leagues';
+import { SLIP_PRESET_LABEL } from '@/lib/slip/types';
 
 const rate = (hits: number, n: number) => (n > 0 ? hits / n : 0);
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
+const signedPct = (x: number) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
 
 export function AccuracyDashboard({
+    stats,
+    recent,
+    slipStats,
+    slipsRecent,
+}: {
+    stats: RollingStats | null;
+    recent: Array<GradedResult & { tracked: TrackedPrediction | null }>;
+    slipStats: SlipRollingStats | null;
+    slipsRecent: Array<GradedSlip & { record: SlipRecord | null }>;
+}) {
+    return (
+        <div className="space-y-12">
+            <PredictionRecord stats={stats} recent={recent} />
+            <SlipRecord stats={slipStats} recent={slipsRecent} />
+        </div>
+    );
+}
+
+function PredictionRecord({
     stats,
     recent,
 }: {
@@ -89,9 +117,7 @@ export function AccuracyDashboard({
                                         {r.finalScore.home}–{r.finalScore.away}
                                     </span>
                                     <span
-                                        className={
-                                            r.hits.outcome ? 'text-pos' : 'text-neg'
-                                        }
+                                        className={r.hits.outcome ? 'text-pos' : 'text-neg'}
                                         title="Match-outcome pick"
                                     >
                                         {r.hits.outcome ? 'hit' : 'miss'}
@@ -101,6 +127,109 @@ export function AccuracyDashboard({
                         ))}
                     </ul>
                 </section>
+            )}
+        </div>
+    );
+}
+
+function SlipRecord({
+    stats,
+    recent,
+}: {
+    stats: SlipRollingStats | null;
+    recent: Array<GradedSlip & { record: SlipRecord | null }>;
+}) {
+    const o = stats?.overall;
+    const graded = o?.n ?? 0;
+
+    return (
+        <div className="space-y-6">
+            <div className="space-y-1">
+                <h2 className="text-lg font-semibold tracking-tight">Bet-slip record</h2>
+                <p className="max-w-2xl text-sm text-text-dim">
+                    The builder’s canonical preset slips are logged when they’re shown and settled at
+                    1 unit each once every leg has played. Corners legs are never in these — there’s no
+                    corner-count feed to grade against.
+                </p>
+            </div>
+
+            {graded === 0 || !o ? (
+                <div className="rounded-[var(--radius-card)] border border-dashed border-border p-8 text-center text-sm text-text-dim">
+                    No graded slips yet.
+                </div>
+            ) : (
+                <>
+                    <section className="grid gap-3 sm:grid-cols-3">
+                        <Stat label="Graded slips" value={String(o.n)} />
+                        <Stat label="Slips landed" value={pct(rate(o.won, o.n))} sub={`${o.won} of ${o.n}`} />
+                        <Stat
+                            label="Return on stake"
+                            value={o.staked > 0 ? signedPct(o.returned / o.staked - 1) : '—'}
+                            sub="1 unit per slip"
+                        />
+                    </section>
+
+                    <section>
+                        <h3 className="mb-2 text-sm font-semibold">By preset</h3>
+                        <table className="w-full text-sm">
+                            <thead className="text-left text-xs uppercase tracking-wide text-text-faint">
+                                <tr>
+                                    <th className="py-1.5">Preset</th>
+                                    <th className="py-1.5 text-right">Slips</th>
+                                    <th className="py-1.5 text-right">Landed</th>
+                                    <th className="py-1.5 text-right">ROI</th>
+                                </tr>
+                            </thead>
+                            <tbody className="tabular">
+                                {Object.entries(stats.byPreset).map(([id, s]) => (
+                                    <tr key={id} className="border-t border-border">
+                                        <td className="py-1.5">{SLIP_PRESET_LABEL[id] ?? id}</td>
+                                        <td className="py-1.5 text-right text-text-dim">{s.n}</td>
+                                        <td className="py-1.5 text-right">{pct(rate(s.won, s.n))}</td>
+                                        <td
+                                            className={`py-1.5 text-right ${
+                                                s.staked > 0 && s.returned / s.staked - 1 >= 0
+                                                    ? 'text-pos'
+                                                    : 'text-neg'
+                                            }`}
+                                        >
+                                            {s.staked > 0 ? signedPct(s.returned / s.staked - 1) : '—'}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </section>
+
+                    {recent.length > 0 && (
+                        <section>
+                            <h3 className="mb-2 text-sm font-semibold">Recent slips</h3>
+                            <ul className="divide-y divide-border text-sm">
+                                {recent.map((r) => (
+                                    <li
+                                        key={r.slipId}
+                                        className="flex items-center justify-between gap-3 py-2"
+                                    >
+                                        <span className="truncate text-text-dim">
+                                            {SLIP_PRESET_LABEL[r.presetId] ?? r.presetId} ·{' '}
+                                            {r.legResults.length} legs
+                                        </span>
+                                        <span className="flex items-center gap-3 tabular">
+                                            {r.combinedBookOdds != null && (
+                                                <span className="text-text-faint">
+                                                    @ {r.combinedBookOdds.toFixed(2)}
+                                                </span>
+                                            )}
+                                            <span className={r.won ? 'text-pos' : 'text-neg'}>
+                                                {r.won ? 'landed' : 'lost'}
+                                            </span>
+                                        </span>
+                                    </li>
+                                ))}
+                            </ul>
+                        </section>
+                    )}
+                </>
             )}
         </div>
     );

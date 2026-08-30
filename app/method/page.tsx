@@ -65,6 +65,27 @@ export default function MethodPage() {
             </section>
 
             <section className="space-y-2">
+                <h2 className="text-base font-semibold text-text">Bet-slip builder</h2>
+                <p>
+                    The <a className="text-accent underline-offset-2 hover:underline" href="/slip">
+                        slip builder
+                    </a>{' '}
+                    turns these probabilities into an accumulator. Every fixture is expanded into
+                    candidate legs across match result, double chance, over/under and both-teams-to-score;
+                    each leg is priced at its fair odds (1 ÷ model probability) and, where a live feed has
+                    them, at real bookmaker odds. In <em>target-odds</em> mode the curator searches
+                    one-leg-per-match combinations and returns the one that clears your target with the
+                    highest combined model probability — the safest slip that fits. In{' '}
+                    <em>single-market</em> mode it just takes the strongest N selections in your chosen
+                    market. Combined probability is the product of the legs, which assumes they’re
+                    independent; real fixtures are only roughly so, and the underlying probabilities are
+                    not yet calibrated — so the combined figure is a guide, not a true win chance. Against
+                    real odds an accumulator’s expected value is almost always negative, because each leg
+                    carries the bookmaker’s margin.
+                </p>
+            </section>
+
+            <section className="space-y-2">
                 <h2 className="text-base font-semibold text-text">Limitations</h2>
                 <p>
                     The model has no knowledge of injuries, suspensions, line-ups, motivation, weather
