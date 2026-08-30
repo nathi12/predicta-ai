@@ -1,10 +1,15 @@
 // app/api/cron/grade/route.ts
-// Grades predictions whose matches have finished. Triggered by Vercel Cron
-// (see vercel.json) or manually with the CRON_SECRET.
+// Grades predictions and curated slips whose matches have finished. Triggered by
+// Vercel Cron (see vercel.json) or manually with the CRON_SECRET.
+//
+// On Vercel Hobby, cron runs once per day, so one invocation clears a whole
+// day's backlog: all finished-match lookups are done in a single batched
+// getMatchesByIds() call shared between the prediction and slip passes.
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { CRON_SECRET } from '@/lib/env';
 import { log } from '@/lib/log';
+import type { SlipRecord } from '@/types';
 import { getMatchesByIds, type FDMatch } from '@/services/footballData';
 import { gradePrediction, pendingMatchIds, getTracked, pushRecent } from '@/lib/tracking';
 import { gradeSlip, getSlip, pendingSlipIds } from '@/lib/slipTracking';
@@ -12,49 +17,15 @@ import { gradeSlip, getSlip, pendingSlipIds } from '@/lib/slipTracking';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
+const SETTLE_MS = 2.5 * 3_600_000; // match + stoppage + buffer
+
 function authorized(req: NextRequest): boolean {
     if (!CRON_SECRET) return process.env.NODE_ENV !== 'production';
     const header = req.headers.get('authorization');
     return header === `Bearer ${CRON_SECRET}` || req.nextUrl.searchParams.get('key') === CRON_SECRET;
 }
 
-async function run() {
-    const ids = await pendingMatchIds();
-    if (ids.length === 0) return { checked: 0, graded: 0 };
-
-    const now = Date.now();
-    const due: { matchId: string; footballDataId: number }[] = [];
-    for (const matchId of ids) {
-        const tracked = await getTracked(matchId);
-        if (!tracked) continue;
-        // Grade ~2.5h after kickoff (match + stoppage + buffer).
-        if (new Date(tracked.kickoff).getTime() + 2.5 * 3_600_000 > now) continue;
-        const fdId = Number(matchId.split('-')[1]);
-        if (Number.isFinite(fdId)) due.push({ matchId, footballDataId: fdId });
-    }
-    if (due.length === 0) return { checked: ids.length, graded: 0 };
-
-    const matches = await getMatchesByIds(due.map((d) => d.footballDataId));
-    const byId = new Map(matches.map((m) => [m.id, m]));
-
-    let graded = 0;
-    for (const { matchId, footballDataId } of due) {
-        const m = byId.get(footballDataId);
-        if (!m || m.status !== 'FINISHED') continue;
-        const h = m.score?.fullTime?.home;
-        const a = m.score?.fullTime?.away;
-        if (h == null || a == null) continue;
-        const tracked = await getTracked(matchId);
-        if (!tracked) continue;
-        await gradePrediction(tracked, h, a);
-        await pushRecent(matchId);
-        graded++;
-    }
-
-    const slips = await gradeSlips(now);
-
-    return { checked: ids.length, due: due.length, graded, ...slips };
-}
+const fdId = (matchId: string): number => Number(matchId.split('-')[1]);
 
 const finalScore = (m: FDMatch | undefined): { home: number; away: number } | null => {
     const h = m?.score?.fullTime?.home;
@@ -62,36 +33,77 @@ const finalScore = (m: FDMatch | undefined): { home: number; away: number } | nu
     return m?.status === 'FINISHED' && h != null && a != null ? { home: h, away: a } : null;
 };
 
-/** Grade any pending slip whose every leg's match has finished. */
-async function gradeSlips(now: number): Promise<{ slipsChecked: number; slipsGraded: number }> {
-    const ids = await pendingSlipIds();
-    if (ids.length === 0) return { slipsChecked: 0, slipsGraded: 0 };
+async function run() {
+    const now = Date.now();
 
-    let slipsGraded = 0;
-    for (const id of ids) {
+    // --- collect what's due ------------------------------------------
+    const predIds = await pendingMatchIds();
+    const duePreds: { matchId: string; footballDataId: number }[] = [];
+    for (const matchId of predIds) {
+        const tracked = await getTracked(matchId);
+        if (!tracked) continue;
+        if (new Date(tracked.kickoff).getTime() + SETTLE_MS > now) continue;
+        const id = fdId(matchId);
+        if (Number.isFinite(id)) duePreds.push({ matchId, footballDataId: id });
+    }
+
+    const slipIds = await pendingSlipIds();
+    const dueSlips: SlipRecord[] = [];
+    for (const id of slipIds) {
         const rec = await getSlip(id);
         if (!rec) continue;
-        if (rec.legs.some((l) => new Date(l.kickoff).getTime() + 2.5 * 3_600_000 > now)) continue;
+        if (rec.legs.some((l) => new Date(l.kickoff).getTime() + SETTLE_MS > now)) continue;
+        dueSlips.push(rec);
+    }
 
-        const fdIds = rec.legs.map((l) => Number(l.matchId.split('-')[1])).filter(Number.isFinite);
-        const matches = await getMatchesByIds(fdIds);
-        const byFdId = new Map(matches.map((m) => [m.id, m]));
+    if (duePreds.length === 0 && dueSlips.length === 0) {
+        return { pendingPreds: predIds.length, pendingSlips: slipIds.length, graded: 0, slipsGraded: 0 };
+    }
 
+    // --- one batched final-score lookup for everything --------------
+    const wanted = new Set<number>();
+    for (const d of duePreds) wanted.add(d.footballDataId);
+    for (const s of dueSlips) for (const l of s.legs) wanted.add(fdId(l.matchId));
+
+    const matches = await getMatchesByIds([...wanted].filter(Number.isFinite));
+    const byId = new Map(matches.map((m) => [m.id, m]));
+
+    // --- grade predictions ----------------------------------------
+    let graded = 0;
+    for (const { matchId, footballDataId } of duePreds) {
+        const score = finalScore(byId.get(footballDataId));
+        if (!score) continue;
+        const tracked = await getTracked(matchId);
+        if (!tracked) continue;
+        await gradePrediction(tracked, score.home, score.away);
+        await pushRecent(matchId);
+        graded++;
+    }
+
+    // --- grade slips (all legs must have a final score) -----------
+    let slipsGraded = 0;
+    for (const rec of dueSlips) {
         const finals = new Map<string, { home: number; away: number }>();
-        let allFinished = true;
+        let complete = true;
         for (const l of rec.legs) {
-            const score = finalScore(byFdId.get(Number(l.matchId.split('-')[1])));
+            const score = finalScore(byId.get(fdId(l.matchId)));
             if (!score) {
-                allFinished = false;
+                complete = false;
                 break;
             }
             finals.set(l.matchId, score);
         }
-        if (!allFinished) continue;
-
-        if (await gradeSlip(rec, finals)) slipsGraded++;
+        if (complete && (await gradeSlip(rec, finals))) slipsGraded++;
     }
-    return { slipsChecked: ids.length, slipsGraded };
+
+    return {
+        pendingPreds: predIds.length,
+        pendingSlips: slipIds.length,
+        duePreds: duePreds.length,
+        dueSlips: dueSlips.length,
+        graded,
+        slipsGraded,
+    };
 }
 
 export async function GET(req: NextRequest) {

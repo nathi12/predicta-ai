@@ -44,7 +44,7 @@ Anyone advertising much higher is not measuring honestly.
 - **Football-Data.org v4** — fixtures, home/away tables, form, head-to-head, results
 - **API-Football** — optional enrichment (live form, provider probabilities)
 - **Upstash Redis / Vercel KV** — shared API cache + prediction log
-- **Vercel Cron** — hourly grading of finished matches
+- **Vercel Cron** — daily grading of finished matches (Hobby-plan cron limit)
 
 Data is fetched and predicted **once on the server** and cached; the browser
 never calls a football API and never runs the model.
@@ -84,9 +84,11 @@ npm run dev
 ## Grading
 
 `GET/POST /api/cron/grade` (auth: `Authorization: Bearer $CRON_SECRET` or
-`?key=`) scans pending predictions, fetches final scores for matches that have
-finished, scores each market, and folds the result into the rolling stats behind
-`/accuracy`. `vercel.json` runs it hourly.
+`?key=`) scans pending predictions and curated slips, fetches final scores for
+matches that have finished (one batched lookup), scores each market, and folds
+the result into the rolling stats behind `/accuracy`. `vercel.json` runs it once
+a day at ~04:00 UTC — the Vercel Hobby cron limit — which is enough to clear the
+previous day's fixtures. Trigger it manually any time with the `?key=` param.
 
 ## Project layout
 
