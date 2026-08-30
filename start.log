@@ -1,0 +1,25 @@
+﻿▲ Next.js 16.1.1
+- Local:         http://localhost:3899
+- Network:       http://192.168.8.9:3899
+
+✓ Starting...
+✓ Ready in 8.7s
+node.exe : [predicta] football-data rate limit, waiting 1874ms
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Users\z004zbxb\AppData\Roami ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([predicta] foot... waiting 1874ms:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[predicta] football-data rate limit, waiting 1874ms
+[predicta] api-football 403 on /fixtures?league=78&season=2026&from=2026-08-30&to=2026-09-01
+[predicta] api-football 403 on /fixtures?league=140&season=2026&from=2026-08-30&to=2026-09-01
+[predicta] api-football 403 on /fixtures?league=61&season=2026&from=2026-08-30&to=2026-09-01
+[predicta] football-data rate limit, waiting 11000ms
+[predicta] api-football 403 on /fixtures?league=39&season=2026&from=2026-08-30&to=2026-09-01
+[predicta] football-data rate limit, waiting 11000ms
+[predicta] football-data rate limit, waiting 11000ms
+[predicta] api-football 403 on /fixtures?league=135&season=2026&from=2026-08-30&to=2026-09-01
+[predicta] api-football 403 on /fixtures?league=135&season=2026&from=2026-08-31&to=2026-09-02
+[predicta] api-football 429 on /fixtures?league=140&season=2026&from=2026-08-31&to=2026-09-02
+[predicta] api-football 403 on /fixtures?league=39&season=2026&from=2026-08-31&to=2026-09-02

@@ -1,0 +1,78 @@
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = {
+    title: 'Method',
+    description: 'How the PredictaAI football model works.',
+};
+
+export default function MethodPage() {
+    return (
+        <article className="prose-invert max-w-2xl space-y-6 text-sm leading-relaxed text-text-dim">
+            <header>
+                <h1 className="text-xl font-semibold tracking-tight text-text">How the model works</h1>
+            </header>
+
+            <section className="space-y-2">
+                <h2 className="text-base font-semibold text-text">Goal model</h2>
+                <p>
+                    Each team gets venue-specific attack and defence ratings from the home and away
+                    league tables, normalised to the division average. Early-season rates are shrunk
+                    towards the league mean so a two-game sample doesn’t dominate. Those ratings give
+                    an expected-goals figure for each side, which feeds a{' '}
+                    <strong className="text-text">Dixon-Coles bivariate Poisson</strong> — a Poisson
+                    model with a correction that lifts the low-scoring draw scorelines football
+                    actually produces. Every market (1X2, over/under, both-teams-to-score, correct
+                    score) is read off that single score matrix, so the numbers can’t contradict each
+                    other.
+                </p>
+            </section>
+
+            <section className="space-y-2">
+                <h2 className="text-base font-semibold text-text">Ratings &amp; form</h2>
+                <p>
+                    An Elo rating, seeded from the current table and updated by replaying this
+                    season’s results with a goal-difference-aware K-factor, provides a second opinion
+                    on the match outcome. Recent form (last five games) nudges the expected-goals
+                    figures by up to ±8%. Head-to-head history adjusts the projected goal total when
+                    there are enough previous meetings.
+                </p>
+            </section>
+
+            <section className="space-y-2">
+                <h2 className="text-base font-semibold text-text">Enrichment</h2>
+                <p>
+                    For imminent fixtures, and within a strict daily request budget, the model pulls
+                    live form and the provider’s own probability estimate from API-Football and blends
+                    them in. Fixtures with this extra data are marked <em>Enriched</em>; the rest run
+                    on league tables and form alone (<em>Core data</em>) and are given wider
+                    uncertainty.
+                </p>
+            </section>
+
+            <section className="space-y-2">
+                <h2 className="text-base font-semibold text-text">Calibration &amp; honesty</h2>
+                <p>
+                    Confidence is a real quantity — the sharpness of the outcome distribution scaled
+                    by how much data backs it — not a marketing number. Predictions are logged and
+                    graded against results, and a calibration map learned from that history is folded
+                    back in. The measured hit rate lives on the{' '}
+                    <a className="text-accent underline-offset-2 hover:underline" href="/accuracy">
+                        accuracy page
+                    </a>
+                    . A realistic ceiling for match-outcome accuracy is about 53–56%; anyone claiming
+                    much more is not measuring honestly.
+                </p>
+            </section>
+
+            <section className="space-y-2">
+                <h2 className="text-base font-semibold text-text">Limitations</h2>
+                <p>
+                    The model has no knowledge of injuries, suspensions, line-ups, motivation, weather
+                    or in-game events. Corner predictions are a proxy from attacking volume, not real
+                    corner data, and are the least reliable market shown. Newly promoted teams have
+                    thin data until several rounds have been played.
+                </p>
+            </section>
+        </article>
+    );
+}

@@ -1,26 +1,106 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/*
+  PredictaAI design tokens — one restrained dark system.
+  Surfaces are layered near-black; a single muted-green accent; semantics used
+  sparingly. No gradients-as-decoration, no neon.
+*/
+@theme {
+  --color-bg: #0b0f14;
+  --color-surface: #121821;
+  --color-surface-2: #1a222e;
+  --color-border: #26303d;
+  --color-border-strong: #364454;
+
+  --color-text: #e7ecf2;
+  --color-text-dim: #9aa7b6;
+  --color-text-faint: #6b7787;
+
+  --color-accent: #3fb27f;
+  --color-accent-dim: #2b7f5c;
+
+  --color-pos: #4ac08a;
+  --color-neg: #e5726b;
+  --color-neutral: #d9a441;
+
+  /* 1X2 segments — three calm, distinguishable hues. */
+  --color-home: #3fb27f;
+  --color-draw: #8a94a3;
+  --color-away: #6f8fd6;
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  --radius-card: 12px;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+* {
+  border-color: var(--color-border);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  color-scheme: dark;
+  background: var(--color-bg);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Numeric alignment for stat-heavy tables/cards. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Focus ring — consistent, visible, keyboard-only. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Skeleton shimmer. */
+@keyframes predicta-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--color-surface-2);
+  border-radius: 6px;
+}
+
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-border-strong) 55%, transparent),
+    transparent
+  );
+  animation: predicta-shimmer 1.6s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  .skeleton::after {
+    animation: none;
+  }
 }
