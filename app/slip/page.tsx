@@ -1,4 +1,5 @@
 import { Suspense } from 'react';
+import { after } from 'next/server';
 import type { Metadata } from 'next';
 import { getUpcomingMatches } from '@/lib/matchData';
 import { getUpcomingOdds } from '@/lib/oddsData';
@@ -13,14 +14,16 @@ export const metadata: Metadata = {
         'Turn the model’s probabilities into a curated accumulator: target a combined odds figure or build one market, priced against real bookmaker odds.',
 };
 
-// Rebuilt at most every 15 minutes; served from cache in between.
+// Served from cache; ISR revalidates in the background every 15 minutes.
 export const revalidate = 900;
+// Headroom for the detached cache rebuild kicked off by getUpcomingMatches().
+export const maxDuration = 60;
 
 async function Builder() {
     const [matches, odds] = await Promise.all([getUpcomingMatches(), getUpcomingOdds()]);
 
-    // Fire-and-forget: log the canonical preset slips for the public record.
-    void recordPresetSlips(matches, odds).catch(() => {});
+    // After the response: log the canonical preset slips for the public record.
+    after(() => recordPresetSlips(matches, odds).catch(() => {}));
 
     if (matches.length === 0) {
         return (

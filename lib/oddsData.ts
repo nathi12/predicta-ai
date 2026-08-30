@@ -7,6 +7,7 @@
 // without touching predictions.
 
 import 'server-only';
+import { after } from 'next/server';
 import { store } from '@/lib/kv';
 import { log } from '@/lib/log';
 import { getUpcomingMatches } from '@/lib/matchData';
@@ -21,22 +22,35 @@ const STALE_KEY = 'odds:v1:stale';
 // so newly-priced fixtures appear, but most rebuilds are all cache hits.
 const TTL = 90 * 60;
 const EMPTY_TTL = 20 * 60;
+const STALE_TTL = 36 * 60 * 60;
 const HOURS_AHEAD = 96;
 const MAX_PER_BUILD = 10;
 
 const globalForFlight = globalThis as unknown as { __predictaOdds?: Promise<OddsMap> };
 
+/**
+ * Odds keyed by match id. Never blocks the slip page: returns whatever is cached
+ * (fresh, then stale, then `{}`) immediately and rebuilds detached. The builder
+ * falls back to fair odds for any fixture without an entry.
+ */
 export async function getUpcomingOdds(): Promise<OddsMap> {
-    const hit = await store.get<OddsMap>(CACHE_KEY);
-    if (hit) return hit;
+    const fresh = await store.get<OddsMap>(CACHE_KEY);
+    if (fresh) return fresh;
 
+    const rebuild = ensureBuild();
+    keepAlive(rebuild);
+
+    return (await store.get<OddsMap>(STALE_KEY)) ?? {};
+}
+
+function ensureBuild(): Promise<OddsMap> {
     if (!globalForFlight.__predictaOdds) {
         globalForFlight.__predictaOdds = (async () => {
             try {
                 const built = await build();
                 const n = Object.keys(built).length;
                 await store.set(CACHE_KEY, built, n > 0 ? TTL : EMPTY_TTL);
-                if (n > 0) await store.set(STALE_KEY, built, 24 * 60 * 60);
+                if (n > 0) await store.set(STALE_KEY, built, STALE_TTL);
                 return n > 0 ? built : ((await store.get<OddsMap>(STALE_KEY)) ?? {});
             } catch (err) {
                 log.warn('odds build failed', (err as Error).message);
@@ -47,6 +61,21 @@ export async function getUpcomingOdds(): Promise<OddsMap> {
         })();
     }
     return globalForFlight.__predictaOdds;
+}
+
+function keepAlive(p: Promise<unknown>): void {
+    try {
+        after(() => p.catch(() => {}));
+    } catch {
+        p.catch(() => {});
+    }
+}
+
+/** Rebuild the odds cache ahead of traffic if stale (called by the daily cron). */
+export async function warmUpcomingOdds(): Promise<number> {
+    const fresh = await store.get<OddsMap>(CACHE_KEY);
+    if (fresh && Object.keys(fresh).length > 0) return Object.keys(fresh).length;
+    return Object.keys(await ensureBuild()).length;
 }
 
 async function build(): Promise<OddsMap> {

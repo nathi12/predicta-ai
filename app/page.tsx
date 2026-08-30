@@ -4,8 +4,10 @@ import { MatchExplorer } from '@/components/MatchExplorer';
 import { MatchGridSkeleton } from '@/components/skeletons';
 import { Disclaimer } from '@/components/Disclaimer';
 
-// Rebuilt at most every 15 minutes; served instantly from cache in between.
+// Served from cache; ISR revalidates in the background every 15 minutes.
 export const revalidate = 900;
+// Headroom for the detached cache rebuild kicked off by getUpcomingMatches().
+export const maxDuration = 60;
 
 async function MatchList() {
     const matches = await getUpcomingMatches();

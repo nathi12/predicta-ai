@@ -3,6 +3,7 @@
 // One KV-cached entry point: getUpcomingMatches().
 
 import 'server-only';
+import { after } from 'next/server';
 import { store } from '@/lib/kv';
 import { hasApiFootball } from '@/lib/env';
 import { log } from '@/lib/log';
@@ -345,24 +346,42 @@ function applyInsight(home: TeamStrength, away: TeamStrength, insight: ApiFootba
 
 const CACHE_KEY = 'matches:v6';
 const STALE_KEY = 'matches:v6:stale';
+const FRESH_TTL = 15 * 60;
+const STALE_TTL = 48 * 60 * 60;
 
 // In-process single-flight: concurrent callers on one instance share one build.
 const globalForFlight = globalThis as unknown as {
     __predictaAssemble?: Promise<MatchWithPrediction[]>;
 };
 
+/**
+ * Upcoming fixtures + predictions. Stale-while-revalidate: once a good build
+ * exists, callers get it (or the last good build) instantly and any rebuild runs
+ * detached — only the very first load ever waits for the full 6-league fetch.
+ */
 export async function getUpcomingMatches(): Promise<MatchWithPrediction[]> {
-    const hit = await store.get<MatchWithPrediction[]>(CACHE_KEY);
-    if (hit && hit.length > 0) return hit;
+    const fresh = await store.get<MatchWithPrediction[]>(CACHE_KEY);
+    if (fresh && fresh.length > 0) return fresh;
 
+    const rebuild = ensureAssemble();
+
+    const stale = await store.get<MatchWithPrediction[]>(STALE_KEY);
+    if (stale && stale.length > 0) {
+        keepAlive(rebuild);
+        return stale;
+    }
+    return rebuild;
+}
+
+function ensureAssemble(): Promise<MatchWithPrediction[]> {
     if (!globalForFlight.__predictaAssemble) {
         globalForFlight.__predictaAssemble = (async () => {
             try {
-                const fresh = await assemble();
-                if (fresh.length > 0) {
-                    await store.set(CACHE_KEY, fresh, 15 * 60);
-                    await store.set(STALE_KEY, fresh, 24 * 60 * 60);
-                    return fresh;
+                const built = await assemble();
+                if (built.length > 0) {
+                    await store.set(CACHE_KEY, built, FRESH_TTL);
+                    await store.set(STALE_KEY, built, STALE_TTL);
+                    return built;
                 }
                 // Nothing came back (rate limits / outage) — never overwrite a
                 // good cache with an empty one; serve the last good build.
@@ -373,4 +392,22 @@ export async function getUpcomingMatches(): Promise<MatchWithPrediction[]> {
         })();
     }
     return globalForFlight.__predictaAssemble;
+}
+
+/** Extend the serverless invocation until a detached rebuild finishes, when possible. */
+function keepAlive(p: Promise<unknown>): void {
+    try {
+        after(() => p.catch(() => {}));
+    } catch {
+        // Not in a request scope (script / test) — the single-flight promise
+        // still runs; swallow its rejection so it isn't unhandled.
+        p.catch(() => {});
+    }
+}
+
+/** Rebuild the caches ahead of traffic if stale (called by the daily cron). */
+export async function warmUpcomingMatches(): Promise<number> {
+    const fresh = await store.get<MatchWithPrediction[]>(CACHE_KEY);
+    if (fresh && fresh.length > 0) return fresh.length;
+    return (await ensureAssemble()).length;
 }

@@ -6,13 +6,15 @@
 // day's backlog: all finished-match lookups are done in a single batched
 // getMatchesByIds() call shared between the prediction and slip passes.
 
-import { NextResponse, type NextRequest } from 'next/server';
+import { NextResponse, after, type NextRequest } from 'next/server';
 import { CRON_SECRET } from '@/lib/env';
 import { log } from '@/lib/log';
 import type { SlipRecord } from '@/types';
 import { getMatchesByIds, type FDMatch } from '@/services/footballData';
 import { gradePrediction, pendingMatchIds, getTracked, pushRecent } from '@/lib/tracking';
 import { gradeSlip, getSlip, pendingSlipIds } from '@/lib/slipTracking';
+import { warmUpcomingMatches } from '@/lib/matchData';
+import { warmUpcomingOdds } from '@/lib/oddsData';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -106,10 +108,25 @@ async function run() {
     };
 }
 
+/**
+ * Rebuild the page caches so the day's first visitors don't trigger a cold
+ * build. Runs after the response (best-effort — may be cut short by maxDuration,
+ * which is fine: the grading that matters has already completed).
+ */
+async function warm(): Promise<void> {
+    try {
+        await warmUpcomingMatches();
+        await warmUpcomingOdds();
+    } catch (err) {
+        log.warn('cache warm failed', (err as Error).message);
+    }
+}
+
 export async function GET(req: NextRequest) {
     if (!authorized(req)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
     try {
         const summary = await run();
+        after(warm);
         log.debug('grade cron', summary);
         return NextResponse.json({ ok: true, ...summary });
     } catch (err) {
