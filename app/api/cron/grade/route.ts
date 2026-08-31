@@ -5,13 +5,26 @@
 // On Vercel Hobby, cron runs once per day, so one invocation clears a whole
 // day's backlog: all finished-match lookups are done in a single batched
 // getMatchesByIds() call shared between the prediction and slip passes.
+//
+// A third pass then grades the corners markets off API-Football match stats
+// (football-data.org has no corner counts). It's rate-limited hard — see
+// drainCorners — so it stays well inside the shared free-tier budget.
 
 import { NextResponse, after, type NextRequest } from 'next/server';
 import { CRON_SECRET } from '@/lib/env';
 import { log } from '@/lib/log';
-import type { SlipRecord } from '@/types';
+import type { SlipRecord, TrackedPrediction } from '@/types';
 import { getMatchesByIds, type FDMatch } from '@/services/footballData';
-import { gradePrediction, pendingMatchIds, getTracked, pushRecent } from '@/lib/tracking';
+import { budgetRemaining, cornersBudgetRemaining, getFixtureCorners } from '@/services/apiFootball';
+import {
+    gradePrediction,
+    pendingMatchIds,
+    getTracked,
+    pushRecent,
+    pendingCornerIds,
+    gradeCorners,
+    discardPendingCorner,
+} from '@/lib/tracking';
 import { gradeSlip, getSlip, pendingSlipIds } from '@/lib/slipTracking';
 import { warmUpcomingMatches } from '@/lib/matchData';
 import { warmUpcomingOdds } from '@/lib/oddsData';
@@ -59,7 +72,8 @@ async function run() {
     }
 
     if (duePreds.length === 0 && dueSlips.length === 0) {
-        return { pendingPreds: predIds.length, pendingSlips: slipIds.length, graded: 0, slipsGraded: 0 };
+        const corners = await drainCorners(now);
+        return { pendingPreds: predIds.length, pendingSlips: slipIds.length, graded: 0, slipsGraded: 0, ...corners };
     }
 
     // --- one batched final-score lookup for everything --------------
@@ -98,6 +112,8 @@ async function run() {
         if (complete && (await gradeSlip(rec, finals))) slipsGraded++;
     }
 
+    const corners = await drainCorners(now);
+
     return {
         pendingPreds: predIds.length,
         pendingSlips: slipIds.length,
@@ -105,7 +121,59 @@ async function run() {
         dueSlips: dueSlips.length,
         graded,
         slipsGraded,
+        ...corners,
     };
+}
+
+// Corners are graded off API-Football match stats, one request per fixture.
+// Three brakes keep it inside the free tier: a per-run cap (the 60s function
+// limit), a shared-budget headroom (leave room for enrichment + odds), and the
+// service's own daily corners sub-budget. Newest fixtures go first so the live
+// sample is always covered; a backlog just drains over the following days, and
+// anything still unresolved after two weeks is dropped.
+const CORNERS_PER_RUN = 12;
+const AF_BUDGET_HEADROOM = 25;
+const CORNERS_MAX_AGE_MS = 14 * 24 * 3_600_000;
+
+async function drainCorners(now: number): Promise<{ pendingCorners: number; cornersGraded: number }> {
+    const ids = await pendingCornerIds();
+    if (ids.length === 0) return { pendingCorners: 0, cornersGraded: 0 };
+
+    const [shared, cornerBudget] = await Promise.all([budgetRemaining(), cornersBudgetRemaining()]);
+    const cap = Math.min(
+        CORNERS_PER_RUN,
+        cornerBudget,
+        Math.max(0, shared - AF_BUDGET_HEADROOM),
+    );
+    if (cap === 0) return { pendingCorners: ids.length, cornersGraded: 0 };
+
+    // Grade the freshest matches first; stale ones can wait or age out.
+    const queue: Array<{ matchId: string; tracked: TrackedPrediction }> = [];
+    for (const matchId of ids) {
+        const tracked = await getTracked(matchId);
+        if (!tracked || !tracked.apiFootballFixtureId || tracked.markets.corners95 == null) {
+            await discardPendingCorner(matchId);
+            continue;
+        }
+        if (now - new Date(tracked.kickoff).getTime() > CORNERS_MAX_AGE_MS) {
+            await discardPendingCorner(matchId);
+            continue;
+        }
+        queue.push({ matchId, tracked });
+    }
+    queue.sort((a, b) => b.tracked.kickoff.localeCompare(a.tracked.kickoff));
+
+    let cornersGraded = 0;
+    let spent = 0;
+    for (const { matchId, tracked } of queue) {
+        if (spent >= cap) break;
+        spent++;
+        const total = await getFixtureCorners(tracked.apiFootballFixtureId!);
+        if (total == null) continue; // stats not up yet, or sub-budget spent — retry next run
+        if (await gradeCorners(matchId, total)) cornersGraded++;
+    }
+
+    return { pendingCorners: ids.length, cornersGraded };
 }
 
 /**

@@ -4,6 +4,7 @@
 
 import 'server-only';
 import { store } from '@/lib/kv';
+import { hasApiFootball } from '@/lib/env';
 import type {
     EnrichedMatch,
     GradedResult,
@@ -15,6 +16,9 @@ import type {
 } from '@/types';
 
 const PENDING_SET = 'pred:pending';
+// Predictions whose score is in but whose corners still need an API-Football
+// stats call. Drained by the grade cron, budget permitting.
+const CORNERS_PENDING_SET = 'pred:corners:pending';
 const predKey = (id: string) => `pred:${id}`;
 const resultKey = (id: string) => `result:${id}`;
 
@@ -40,14 +44,24 @@ export async function recordPrediction(
             over25: prediction.markets.over25.probability,
             over35: prediction.markets.over35.probability,
             btts: prediction.markets.btts.probability,
+            corners95: prediction.markets.corners?.over95.probability,
+            corners105: prediction.markets.corners?.over105.probability,
         },
+        apiFootballFixtureId: match.apiFootballFixtureId,
         modelVersion: prediction.modelVersion,
         createdAt: new Date().toISOString(),
     };
 
     const existing = await store.get<TrackedPrediction>(predKey(match.id));
-    // Keep the earliest createdAt so "lead time" stays honest.
-    if (existing) record.createdAt = existing.createdAt;
+    if (existing) {
+        // Keep the earliest createdAt so "lead time" stays honest.
+        record.createdAt = existing.createdAt;
+        // Don't lose an id resolved by an earlier build when this one ran with
+        // no API-Football budget — it's what lets us grade corners later.
+        if (record.apiFootballFixtureId == null) {
+            record.apiFootballFixtureId = existing.apiFootballFixtureId;
+        }
+    }
 
     await store.set(predKey(match.id), record, 45 * 24 * 60 * 60);
     await store.sadd(PENDING_SET, match.id);
@@ -92,6 +106,7 @@ export async function gradePrediction(
         gradedAt: new Date().toISOString(),
         hits: {
             outcome: picked === actualOutcome,
+            over15: (tracked.markets.over15 >= 0.5) === totalGoals > 1.5,
             over25: (tracked.markets.over25 >= 0.5) === totalGoals > 2.5,
             btts: (tracked.markets.btts >= 0.5) === btts,
         },
@@ -101,7 +116,65 @@ export async function gradePrediction(
     await store.set(resultKey(tracked.matchId), result, 120 * 24 * 60 * 60);
     await store.srem(PENDING_SET, tracked.matchId);
     await foldIntoRolling(tracked, result);
+
+    // Corners need a separate API-Football stats call — defer to the cron's
+    // budget-capped pass rather than block grading on it.
+    if (hasApiFootball() && tracked.apiFootballFixtureId && tracked.markets.corners95 != null) {
+        await store.sadd(CORNERS_PENDING_SET, tracked.matchId);
+    }
+
     return result;
+}
+
+// --- corners (deferred second pass) ---------------------------------------
+
+export async function pendingCornerIds(): Promise<string[]> {
+    return store.smembers(CORNERS_PENDING_SET);
+}
+
+/** Drop a match from the corners queue without grading it (id gone, expired). */
+export async function discardPendingCorner(matchId: string): Promise<void> {
+    await store.srem(CORNERS_PENDING_SET, matchId);
+}
+
+/**
+ * Grade the corners markets for an already-scored prediction against a real
+ * corner total, and fold them into the rolling aggregate. Idempotent-ish: the
+ * match leaves the queue whether or not it could be graded.
+ */
+export async function gradeCorners(matchId: string, totalCorners: number): Promise<boolean> {
+    const [tracked, result] = await Promise.all([
+        getTracked(matchId),
+        store.get<GradedResult>(resultKey(matchId)),
+    ]);
+    if (!tracked || !result || tracked.markets.corners95 == null || tracked.markets.corners105 == null) {
+        await store.srem(CORNERS_PENDING_SET, matchId);
+        return false;
+    }
+    // Already graded (e.g. a duplicate queue entry) — don't double-count.
+    if (result.hits.corners95 != null) {
+        await store.srem(CORNERS_PENDING_SET, matchId);
+        return false;
+    }
+
+    const hit95 = (tracked.markets.corners95 >= 0.5) === totalCorners > 9.5;
+    const hit105 = (tracked.markets.corners105 >= 0.5) === totalCorners > 10.5;
+    result.hits.corners95 = hit95;
+    result.hits.corners105 = hit105;
+    await store.set(resultKey(matchId), result, 120 * 24 * 60 * 60);
+
+    const stats = (await store.get<RollingStats>('stats:rolling')) ?? emptyRolling();
+    if (!stats.corners95) stats.corners95 = emptyStat();
+    if (!stats.corners105) stats.corners105 = emptyStat();
+    stats.corners95.n += 1;
+    stats.corners95.hits += hit95 ? 1 : 0;
+    stats.corners105.n += 1;
+    stats.corners105.hits += hit105 ? 1 : 0;
+    stats.updatedAt = new Date().toISOString();
+    await store.set('stats:rolling', stats);
+
+    await store.srem(CORNERS_PENDING_SET, matchId);
+    return true;
 }
 
 // --- rolling aggregate ------------------------------------------------
@@ -113,8 +186,11 @@ function emptyRolling(): RollingStats {
         updatedAt: new Date().toISOString(),
         window: 'all',
         outcome: emptyStat(),
+        over15: emptyStat(),
         over25: emptyStat(),
         btts: emptyStat(),
+        corners95: emptyStat(),
+        corners105: emptyStat(),
         calibration: Array.from({ length: 10 }, (_, i) => ({
             bin: i,
             predicted: 0,
@@ -127,10 +203,15 @@ function emptyRolling(): RollingStats {
 
 async function foldIntoRolling(tracked: TrackedPrediction, r: GradedResult): Promise<void> {
     const stats = (await store.get<RollingStats>('stats:rolling')) ?? emptyRolling();
+    // over15 was added after the first grades landed — older aggregates lack it.
+    if (!stats.over15) stats.over15 = emptyStat();
 
     stats.outcome.n += 1;
     stats.outcome.hits += r.hits.outcome ? 1 : 0;
     stats.outcome.brier += r.brier1x2;
+
+    stats.over15.n += 1;
+    stats.over15.hits += r.hits.over15 ? 1 : 0;
 
     stats.over25.n += 1;
     stats.over25.hits += r.hits.over25 ? 1 : 0;

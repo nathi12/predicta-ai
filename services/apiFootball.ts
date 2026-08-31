@@ -359,3 +359,58 @@ export async function getFixtureOdds(fixtureId: number): Promise<FixtureOdds | n
     await store.set(key, result ?? { none: true }, 6 * 60 * 60);
     return result;
 }
+
+// --- match statistics (corners) -------------------------------------------
+//
+// football-data.org carries no corner counts, so this is the only feed that can
+// grade the corners markets. One `/fixtures/statistics` request per finished
+// fixture; the count never changes once a match is over, so results (including
+// misses) are cached hard to keep the daily budget intact.
+
+interface AFStatEntry {
+    type: string;
+    value: number | string | null;
+}
+
+// Corners grading is a nice-to-have bolted onto the same free-tier key that
+// enrichment and odds depend on. Keep it on its own tight daily sub-budget so a
+// backlog can never starve those, no matter how often the cron fires.
+const CORNERS_DAILY_CAP = 24;
+
+export async function cornersBudgetRemaining(): Promise<number> {
+    const used = (await store.get<number>(`af:corners:calls:${today()}`)) ?? 0;
+    return Math.max(0, CORNERS_DAILY_CAP - used);
+}
+
+/** Total corners (home + away) for a finished fixture, or null if unavailable. */
+export async function getFixtureCorners(fixtureId: number): Promise<number | null> {
+    const key = `af:corners:${fixtureId}`;
+    const hit = await store.get<{ total: number } | { none: true }>(key);
+    if (hit) return 'none' in hit ? null : hit.total;
+
+    // Cache miss = a real request. Reserve one against the daily sub-budget and
+    // the shared budget both (afGet spends the latter); bail before either bites.
+    const cornerCalls = await store.incr(`af:corners:calls:${today()}`, 26 * 60 * 60);
+    if (cornerCalls > CORNERS_DAILY_CAP) {
+        log.warn('api-football corners sub-budget spent for today');
+        return null;
+    }
+
+    const data = await afGet<{ response: Array<{ statistics: AFStatEntry[] }> }>(
+        `/fixtures/statistics?fixture=${fixtureId}`,
+    );
+
+    // A finished match returns one entry per side, each with a Corner Kicks stat.
+    // Anything less (stats not collected, match not final, a null value) is
+    // treated as missing — note Number(null) is 0, so guard the null explicitly.
+    const sides = data?.response ?? [];
+    const counts = sides
+        .map((s) => s.statistics?.find((x) => x.type === 'Corner Kicks')?.value)
+        .map((v) => (v == null || v === '' ? NaN : Number(v)))
+        .filter((v) => Number.isFinite(v));
+
+    const total = counts.length === 2 ? counts[0] + counts[1] : null;
+    // 30d, or a short retry window when the stats aren't up yet.
+    await store.set(key, total == null ? { none: true } : { total }, (total == null ? 6 : 30 * 24) * 60 * 60);
+    return total;
+}

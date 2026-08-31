@@ -71,10 +71,20 @@ function PredictionRecord({
                     </thead>
                     <tbody className="tabular">
                         <MarketRow label="Match outcome (1X2)" n={o.n} hits={o.hits} />
+                        <MarketRow label="Over/Under 1.5 goals" n={stats.over15?.n ?? 0} hits={stats.over15?.hits ?? 0} />
                         <MarketRow label="Over/Under 2.5 goals" n={stats.over25.n} hits={stats.over25.hits} />
                         <MarketRow label="Both teams to score" n={stats.btts.n} hits={stats.btts.hits} />
+                        <MarketRow label="Over 9.5 corners" n={stats.corners95?.n ?? 0} hits={stats.corners95?.hits ?? 0} />
+                        <MarketRow label="Over 10.5 corners" n={stats.corners105?.n ?? 0} hits={stats.corners105?.hits ?? 0} />
                     </tbody>
                 </table>
+                {(stats.corners95?.n ?? 0) === 0 && (
+                    <p className="mt-2 text-xs text-text-faint">
+                        Corners are graded off API-Football match stats and only for fixtures
+                        matched to it before kickoff — the sample builds from zero and lags the
+                        goals markets.
+                    </p>
+                )}
             </section>
 
             <section>
@@ -148,8 +158,8 @@ function SlipRecord({
                 <h2 className="text-lg font-semibold tracking-tight">Bet-slip record</h2>
                 <p className="max-w-2xl text-sm text-text-dim">
                     The builder’s canonical preset slips are logged when they’re shown and settled at
-                    1 unit each once every leg has played. Corners legs are never in these — there’s no
-                    corner-count feed to grade against.
+                    1 unit each once every leg has played. Corners legs are never in these — the
+                    corner model is a proxy we don’t stake.
                 </p>
             </div>
 

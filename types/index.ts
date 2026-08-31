@@ -167,7 +167,14 @@ export interface TrackedPrediction {
         over25: number;
         over35: number;
         btts: number;
+        /** Corner-total over 9.5 / 10.5 probabilities. Absent on records made
+         *  before corners tracking, or when the model produced no corners line. */
+        corners95?: number;
+        corners105?: number;
     };
+    /** API-Football fixture id, resolved before kickoff. The only feed with
+     *  corner counts, so corners can't be graded without it. */
+    apiFootballFixtureId?: number;
     modelVersion: string;
     createdAt: string;
 }
@@ -180,8 +187,14 @@ export interface GradedResult {
     /** Per-market correctness. */
     hits: {
         outcome: boolean;
+        over15: boolean;
         over25: boolean;
         btts: boolean;
+        /** Corners are graded in a later pass (needs an API-Football stats call),
+         *  so these stay undefined until that pass runs — or forever if it can't
+         *  resolve a corner count for the fixture. */
+        corners95?: boolean;
+        corners105?: boolean;
     };
     /** Brier score contribution for the 1X2 forecast (0 best, 2 worst). */
     brier1x2: number;
@@ -202,8 +215,12 @@ export interface RollingStats {
     updatedAt: string;
     window: '30d' | '90d' | 'all';
     outcome: MarketStat;
+    over15: MarketStat;
     over25: MarketStat;
     btts: MarketStat;
+    /** Over 9.5 / 10.5 total corners, graded off API-Football match stats. */
+    corners95: MarketStat;
+    corners105: MarketStat;
     /** Calibration bins for the 1X2 favourite: predicted vs actual by decile. */
     calibration: Array<{ bin: number; predicted: number; actual: number; n: number }>;
     byLeague: Partial<Record<LeagueCode, MarketStat>>;

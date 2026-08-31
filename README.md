@@ -35,14 +35,16 @@ Full write-up at [`/method`](https://predicta-ai-tpke.vercel.app/method). In sho
    confidence is the sharpness of the distribution scaled by data quality.
 
 **Realistic accuracy:** ~53–56% on match outcomes, ~58–68% on goals/BTTS.
-Corners are a proxy (no free corner-count feed) and the least reliable market.
+Corners are a proxy and the least reliable market — graded on the /accuracy page
+from API-Football match stats, but only for fixtures matched to it before kickoff.
 Anyone advertising much higher is not measuring honestly.
 
 ## Tech
 
 - **Next.js 16** (App Router, RSC, ISR) · React 19 · TypeScript · Tailwind v4
 - **Football-Data.org v4** — fixtures, home/away tables, form, head-to-head, results
-- **API-Football** — optional enrichment (live form, provider probabilities)
+- **API-Football** — optional enrichment (live form, provider probabilities) and
+  the corner counts used to grade the corners markets
 - **Upstash Redis / Vercel KV** — shared API cache + prediction log
 - **Vercel Cron** — daily grading of finished matches (Hobby-plan cron limit)
 
