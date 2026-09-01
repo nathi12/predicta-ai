@@ -79,7 +79,19 @@ async function afGet<T>(pathname: string): Promise<T | null> {
             log.warn(`api-football ${res.status} on ${pathname}`);
             return null;
         }
-        return (await res.json()) as T;
+        const json = (await res.json()) as T & { errors?: unknown };
+        // API-Football answers plan/param limits with HTTP 200 + a non-empty
+        // `errors` and an empty `response`. Treat that as a failed call so
+        // callers degrade instead of silently seeing zero results.
+        const errs = json?.errors;
+        const hasErrors = Array.isArray(errs)
+            ? errs.length > 0
+            : errs != null && typeof errs === 'object' && Object.keys(errs).length > 0;
+        if (hasErrors) {
+            log.warn(`api-football ${pathname} → ${JSON.stringify(errs).slice(0, 200)}`);
+            return null;
+        }
+        return json as T;
     } catch (err) {
         log.warn('api-football fetch failed', (err as Error).message);
         return null;
@@ -147,11 +159,13 @@ export async function getFixturesByDate(date: string): Promise<Record<string, AF
 
 /**
  * A team's most recent fixtures (ids + both team ids), newest first. Feeds the
- * corner-rate backfill so history comes straight from the provider instead of
- * accumulating only from matches this app happened to grade.
+ * corner-rate backfill.
  *
- * `last` takes no `season`, so it works on the free tier where a league+season
- * fixture query is rejected. Cached 12h — a team's recent-match list barely moves.
+ * NOTE: `?team=&last=` needs a PAID API-Football plan — the free tier rejects the
+ * `last` parameter, current-season `team`+`season` queries, and any non-current
+ * date. On the free tier afGet returns null here (logged) and the backfill is a
+ * no-op; corner history then only accrues from matches the app grades day to day.
+ * Cached 12h — a team's recent-match list barely moves.
  */
 export async function getTeamRecentFixtures(
     teamId: number,
@@ -162,11 +176,11 @@ export async function getTeamRecentFixtures(
     if (hit) return 'none' in hit ? null : hit;
 
     const data = await afGet<{ response: AFFixture[] }>(`/fixtures?team=${teamId}&last=${last}`);
-    if (!data) {
+    if (!data || !Array.isArray(data.response)) {
         await store.set(key, { none: true }, 6 * 60 * 60);
         return null;
     }
-    const out: AFFixtureRef[] = (data.response ?? []).map((f) => ({
+    const out: AFFixtureRef[] = data.response.map((f) => ({
         fixtureId: f.fixture.id,
         homeId: f.teams.home.id,
         awayId: f.teams.away.id,
