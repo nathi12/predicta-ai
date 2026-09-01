@@ -5,8 +5,9 @@
 import 'server-only';
 import { store } from '@/lib/kv';
 import { hasApiFootball } from '@/lib/env';
-import { recordTeamCorners } from '@/lib/cornerRates';
+import { foldFixtureCorners } from '@/lib/cornerRates';
 import type {
+    CalibrationBin,
     EnrichedMatch,
     GradedResult,
     LeagueCode,
@@ -49,6 +50,8 @@ export async function recordPrediction(
             corners105: prediction.markets.corners?.over105.probability,
         },
         apiFootballFixtureId: match.apiFootballFixtureId,
+        apiFootballHomeId: match.apiFootballHomeId,
+        apiFootballAwayId: match.apiFootballAwayId,
         modelVersion: prediction.modelVersion,
         createdAt: new Date().toISOString(),
     };
@@ -57,10 +60,14 @@ export async function recordPrediction(
     if (existing) {
         // Keep the earliest createdAt so "lead time" stays honest.
         record.createdAt = existing.createdAt;
-        // Don't lose an id resolved by an earlier build when this one ran with
-        // no API-Football budget — it's what lets us grade corners later.
+        // Don't lose ids resolved by an earlier build when this one ran with
+        // no API-Football budget — they're what let us grade corners later.
         if (record.apiFootballFixtureId == null) {
             record.apiFootballFixtureId = existing.apiFootballFixtureId;
+        }
+        if (record.apiFootballHomeId == null) {
+            record.apiFootballHomeId = existing.apiFootballHomeId;
+            record.apiFootballAwayId = existing.apiFootballAwayId;
         }
     }
 
@@ -173,14 +180,28 @@ export async function gradeCorners(
     const stats = (await store.get<RollingStats>('stats:rolling')) ?? emptyRolling();
     if (!stats.corners95) stats.corners95 = emptyStat();
     if (!stats.corners105) stats.corners105 = emptyStat();
+    if (!stats.cornersCalibration) {
+        stats.cornersCalibration = { over95: emptyCalBins(), over105: emptyCalBins() };
+    }
     stats.corners95.n += 1;
     stats.corners95.hits += hit95 ? 1 : 0;
     stats.corners105.n += 1;
     stats.corners105.hits += hit105 ? 1 : 0;
+    foldCalBin(stats.cornersCalibration.over95, tracked.markets.corners95, totalCorners > 9.5);
+    foldCalBin(stats.cornersCalibration.over105, tracked.markets.corners105, totalCorners > 10.5);
     stats.updatedAt = new Date().toISOString();
     await store.set('stats:rolling', stats);
 
-    if (byTeamId) await recordTeamCorners(byTeamId).catch(() => {});
+    // Fold each side's count into the venue-split rate history — once per
+    // fixture, shared with the backfill path via foldFixtureCorners' own gate.
+    if (byTeamId && tracked.apiFootballFixtureId) {
+        await foldFixtureCorners(
+            tracked.apiFootballFixtureId,
+            byTeamId,
+            tracked.apiFootballHomeId,
+            tracked.apiFootballAwayId,
+        ).catch(() => false);
+    }
 
     await store.srem(CORNERS_PENDING_SET, matchId);
     return true;
@@ -189,6 +210,18 @@ export async function gradeCorners(
 // --- rolling aggregate ------------------------------------------------
 
 const emptyStat = (): MarketStat => ({ n: 0, hits: 0, brier: 0 });
+
+const emptyCalBins = (): CalibrationBin[] =>
+    Array.from({ length: 10 }, (_, i) => ({ bin: i, predicted: 0, actual: 0, n: 0 }));
+
+/** Fold one graded forecast (prob of the "yes"/"over" side, and whether it landed)
+ *  into its decile calibration bucket. */
+function foldCalBin(bins: CalibrationBin[], predicted: number, hit: boolean): void {
+    const b = bins[Math.min(9, Math.floor(predicted * 10))];
+    b.n += 1;
+    b.predicted += predicted;
+    b.actual += hit ? 1 : 0;
+}
 
 function emptyRolling(): RollingStats {
     return {
@@ -200,12 +233,8 @@ function emptyRolling(): RollingStats {
         btts: emptyStat(),
         corners95: emptyStat(),
         corners105: emptyStat(),
-        calibration: Array.from({ length: 10 }, (_, i) => ({
-            bin: i,
-            predicted: 0,
-            actual: 0,
-            n: 0,
-        })),
+        calibration: emptyCalBins(),
+        cornersCalibration: { over95: emptyCalBins(), over105: emptyCalBins() },
         byLeague: {},
     };
 }
@@ -229,11 +258,7 @@ async function foldIntoRolling(tracked: TrackedPrediction, r: GradedResult): Pro
     stats.btts.hits += r.hits.btts ? 1 : 0;
 
     const fav = Math.max(tracked.outcome.home, tracked.outcome.draw, tracked.outcome.away);
-    const bin = Math.min(9, Math.floor(fav * 10));
-    const cal = stats.calibration[bin];
-    cal.n += 1;
-    cal.predicted += fav;
-    cal.actual += r.hits.outcome ? 1 : 0;
+    foldCalBin(stats.calibration, fav, r.hits.outcome);
 
     const lg = (stats.byLeague[tracked.league] ?? emptyStat()) as MarketStat;
     lg.n += 1;

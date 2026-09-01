@@ -8,7 +8,12 @@ import type {
 } from '@/types';
 import { LEAGUES } from '@/lib/leagues';
 import { SLIP_PRESET_LABEL } from '@/lib/slip/types';
-import { buildCalibrationMap, CALIBRATION_MIN_TOTAL } from '@/lib/prediction/calibrate';
+import {
+    buildCalibrationMap,
+    buildCornerCalibrationMap,
+    CALIBRATION_MIN_TOTAL,
+    CORNERS_CALIBRATION_MIN_TOTAL,
+} from '@/lib/prediction/calibrate';
 
 const rate = (hits: number, n: number) => (n > 0 ? hits / n : 0);
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
@@ -97,6 +102,27 @@ function PredictionRecord({
                 <CalibrationChart bins={stats.calibration} />
                 <CalibrationStatus stats={stats} />
             </section>
+
+            {stats.cornersCalibration && (
+                <section>
+                    <h2 className="mb-2 text-sm font-semibold">Calibration — corners over/under</h2>
+                    <p className="mb-3 text-xs text-text-dim">
+                        Same read for the corner totals: each dot is a bucket of over-probabilities
+                        against how often the over actually landed.
+                    </p>
+                    <div className="flex flex-wrap gap-6">
+                        <figure>
+                            <figcaption className="mb-1 text-xs text-text-faint">Over 9.5</figcaption>
+                            <CalibrationChart bins={stats.cornersCalibration.over95} />
+                        </figure>
+                        <figure>
+                            <figcaption className="mb-1 text-xs text-text-faint">Over 10.5</figcaption>
+                            <CalibrationChart bins={stats.cornersCalibration.over105} />
+                        </figure>
+                    </div>
+                    <CornersCalibrationStatus stats={stats} />
+                </section>
+            )}
 
             <section>
                 <h2 className="mb-2 text-sm font-semibold">By league</h2>
@@ -291,13 +317,45 @@ function CalibrationStatus({ stats }: { stats: RollingStats }) {
     );
 }
 
+/** Whether the corners recalibration curve is currently feeding back into the model. */
+function CornersCalibrationStatus({ stats }: { stats: RollingStats }) {
+    const c = stats.cornersCalibration;
+    const graded =
+        c.over95.reduce((s, b) => s + b.n, 0) + c.over105.reduce((s, b) => s + b.n, 0);
+    const live = buildCornerCalibrationMap(c.over95, c.over105) !== undefined;
+
+    return (
+        <p className="mt-3 text-xs text-text-faint">
+            {live ? (
+                <>
+                    <span className="text-pos">● Recalibration live</span> — corner over/under
+                    probabilities are corrected against these curves, relearned from all {graded}{' '}
+                    graded corner lines on every rebuild.
+                </>
+            ) : (
+                <>
+                    <span className="text-text-dim">○ Running uncalibrated</span> — raw model
+                    probabilities until {CORNERS_CALIBRATION_MIN_TOTAL} corner lines are graded (
+                    {graded}/{CORNERS_CALIBRATION_MIN_TOTAL} so far).
+                </>
+            )}
+        </p>
+    );
+}
+
 function CalibrationChart({ bins }: { bins: RollingStats['calibration'] }) {
-    const width = 320;
-    const height = 200;
-    const pad = 28;
+    const width = 340;
+    const height = 224;
+    const m = { top: 12, right: 16, bottom: 40, left: 44 };
+    const x0 = m.left;
+    const y0 = height - m.bottom;
+    const x1 = width - m.right;
+    const y1 = m.top;
+    const midX = (x0 + x1) / 2;
+    const midY = (y0 + y1) / 2;
     const scale = (v: number) => ({
-        x: pad + v * (width - 2 * pad),
-        y: height - pad - v * (height - 2 * pad),
+        x: x0 + v * (x1 - x0),
+        y: y0 + v * (y1 - y0),
     });
 
     return (
@@ -308,15 +366,34 @@ function CalibrationChart({ bins }: { bins: RollingStats['calibration'] }) {
             aria-label="Calibration chart: predicted probability against observed frequency"
         >
             <line
-                x1={pad}
-                y1={height - pad}
-                x2={width - pad}
-                y2={pad}
+                x1={x0}
+                y1={y0}
+                x2={x1}
+                y2={y1}
                 stroke="var(--color-border-strong)"
                 strokeDasharray="4 3"
             />
-            <line x1={pad} y1={height - pad} x2={width - pad} y2={height - pad} stroke="var(--color-border)" />
-            <line x1={pad} y1={pad} x2={pad} y2={height - pad} stroke="var(--color-border)" />
+            <line x1={x0} y1={y0} x2={x1} y2={y0} stroke="var(--color-border)" />
+            <line x1={x0} y1={y1} x2={x0} y2={y0} stroke="var(--color-border)" />
+            <text
+                x={midX}
+                y={height - 8}
+                textAnchor="middle"
+                fill="var(--color-text-faint)"
+                fontSize={11}
+            >
+                predictions
+            </text>
+            <text
+                x={14}
+                y={midY}
+                textAnchor="middle"
+                fill="var(--color-text-faint)"
+                fontSize={11}
+                transform={`rotate(-90 14 ${midY})`}
+            >
+                actuals
+            </text>
             {bins.map((b) => {
                 if (b.n === 0) return null;
                 const predicted = b.predicted / b.n;

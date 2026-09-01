@@ -92,9 +92,11 @@ export default function MethodPage() {
                 <p>
                     The model has no knowledge of injuries, suspensions, line-ups, motivation, weather
                     or in-game events. Corner predictions start as a proxy from attacking volume;
-                    once both teams have a handful of graded games, their real corners-for/against
-                    history is blended in, but this is still the least reliable market shown. Newly
-                    promoted teams have thin data until several rounds have been played.
+                    each side&rsquo;s real corners-for/against history — split by home and away and
+                    backfilled straight from the stats feed — is blended in once it has enough
+                    venue-relevant games, and the corner lines carry their own recalibration curve.
+                    Corners still swing more game-to-game than goals do. Newly promoted teams have
+                    thin data until several rounds have been played.
                 </p>
             </section>
         </article>

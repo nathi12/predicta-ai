@@ -145,6 +145,36 @@ export async function getFixturesByDate(date: string): Promise<Record<string, AF
     return index;
 }
 
+/**
+ * A team's most recent fixtures (ids + both team ids), newest first. Feeds the
+ * corner-rate backfill so history comes straight from the provider instead of
+ * accumulating only from matches this app happened to grade.
+ *
+ * `last` takes no `season`, so it works on the free tier where a league+season
+ * fixture query is rejected. Cached 12h — a team's recent-match list barely moves.
+ */
+export async function getTeamRecentFixtures(
+    teamId: number,
+    last: number,
+): Promise<AFFixtureRef[] | null> {
+    const key = `af:fixtures:team:v1:${teamId}:${last}`;
+    const hit = await store.get<AFFixtureRef[] | { none: true }>(key);
+    if (hit) return 'none' in hit ? null : hit;
+
+    const data = await afGet<{ response: AFFixture[] }>(`/fixtures?team=${teamId}&last=${last}`);
+    if (!data) {
+        await store.set(key, { none: true }, 6 * 60 * 60);
+        return null;
+    }
+    const out: AFFixtureRef[] = (data.response ?? []).map((f) => ({
+        fixtureId: f.fixture.id,
+        homeId: f.teams.home.id,
+        awayId: f.teams.away.id,
+    }));
+    await store.set(key, out, 12 * 60 * 60);
+    return out;
+}
+
 // --- predictions ---------------------------------------------------
 
 export interface ApiFootballInsight {
@@ -387,10 +417,20 @@ interface AFStatEntry {
 // enrichment and odds depend on. Keep it on its own tight daily sub-budget so a
 // backlog can never starve those, no matter how often the cron fires.
 const CORNERS_DAILY_CAP = 24;
+// The historical backfill (drainCornerBackfill) gets its own smaller sub-budget
+// so it can never eat into live grading. Full league coverage takes weeks at
+// this pace — fine, the model degrades to the proxy in the meantime and the
+// queue is aimed at teams playing soonest.
+const CORNERS_BACKFILL_DAILY_CAP = 16;
 
 export async function cornersBudgetRemaining(): Promise<number> {
     const used = (await store.get<number>(`af:corners:calls:${today()}`)) ?? 0;
     return Math.max(0, CORNERS_DAILY_CAP - used);
+}
+
+export async function cornersBackfillBudgetRemaining(): Promise<number> {
+    const used = (await store.get<number>(`af:corners:backfill:calls:${today()}`)) ?? 0;
+    return Math.max(0, CORNERS_BACKFILL_DAILY_CAP - used);
 }
 
 export interface FixtureCorners {
@@ -400,17 +440,29 @@ export interface FixtureCorners {
     byTeamId: Record<number, number>;
 }
 
-/** Per-side corners for a finished fixture, or null if the stats aren't available. */
-export async function getFixtureCorners(fixtureId: number): Promise<FixtureCorners | null> {
+/**
+ * Per-side corners for a finished fixture, or null if the stats aren't available.
+ * `budget` picks which daily sub-budget the request is charged to — live grading
+ * and the historical backfill have separate caps so one can't starve the other.
+ * The result is cached the same way for both, so a fixture fetched by one path
+ * is free for the other.
+ */
+export async function getFixtureCorners(
+    fixtureId: number,
+    budget: 'live' | 'backfill' = 'live',
+): Promise<FixtureCorners | null> {
     const key = `af:corners:v2:${fixtureId}`;
     const hit = await store.get<FixtureCorners | { none: true }>(key);
     if (hit) return 'none' in hit ? null : hit;
 
-    // Cache miss = a real request. Reserve one against the daily sub-budget and
-    // the shared budget both (afGet spends the latter); bail before either bites.
-    const cornerCalls = await store.incr(`af:corners:calls:${today()}`, 26 * 60 * 60);
-    if (cornerCalls > CORNERS_DAILY_CAP) {
-        log.warn('api-football corners sub-budget spent for today');
+    // Cache miss = a real request. Reserve one against the relevant daily
+    // sub-budget and the shared budget both (afGet spends the latter).
+    const counterKey =
+        budget === 'backfill' ? `af:corners:backfill:calls:${today()}` : `af:corners:calls:${today()}`;
+    const cap = budget === 'backfill' ? CORNERS_BACKFILL_DAILY_CAP : CORNERS_DAILY_CAP;
+    const cornerCalls = await store.incr(counterKey, 26 * 60 * 60);
+    if (cornerCalls > cap) {
+        log.warn(`api-football corners ${budget} sub-budget spent for today`);
         return null;
     }
 

@@ -25,9 +25,10 @@ import { blendOutcomes } from './ensemble';
 import { cornersMarket, type CornerRates } from './corners';
 import { calibrateOutcome, confidenceScore, type CalibrationMap } from './calibrate';
 
-// 2.2.0 — corners lines blended with each side's real corners-for/against history
-// when available; outcome probabilities recalibrated against the grading log.
-export const MODEL_VERSION = '2.2.0';
+// 2.3.0 — corners: venue-split team-rate history, negative-binomial total, and
+// their own recalibration curve. 2.2.0 — corners lines blended with each side's
+// real corners history; outcome probabilities recalibrated against the grading log.
+export const MODEL_VERSION = '2.3.0';
 
 export interface PredictOptions {
     /** Precomputed league averages (from the HOME/AWAY standings tables). */
@@ -95,7 +96,7 @@ export function predictMatch(match: EnrichedMatch, opts: PredictOptions = {}): M
         over35: goalsLine(overProbability(matrix, 3.5), 0.5, 0.35),
         btts: bttsLine(bttsProbability(matrix)),
         corners: (() => {
-            const c = cornersMarket(lambdaHome, lambdaAway, league, opts.cornerRates);
+            const c = cornersMarket(lambdaHome, lambdaAway, league, opts.cornerRates, opts.calibration);
             return {
                 over85: c.over85,
                 over95: c.over95,

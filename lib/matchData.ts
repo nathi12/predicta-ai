@@ -26,10 +26,10 @@ import {
 } from '@/services/apiFootball';
 import { buildRatings, seedFromRecord, type FinishedResult } from '@/lib/prediction/elo';
 import { computeLeagueAverages } from '@/lib/prediction/strength';
-import { buildCalibrationMap } from '@/lib/prediction/calibrate';
+import { buildCalibrationMap, buildCornerCalibrationMap } from '@/lib/prediction/calibrate';
 import { predictMatch } from '@/lib/prediction';
 import { recordPrediction, getRollingStats } from '@/lib/tracking';
-import { getAllCornerRates, pickRates } from '@/lib/cornerRates';
+import { getAllCornerRates, pickRates, queueBackfillIfNeeded } from '@/lib/cornerRates';
 import type {
     EnrichedMatch,
     HeadToHead,
@@ -238,12 +238,21 @@ async function assemble(): Promise<MatchWithPrediction[]> {
     let h2hBudget = H2H_LIMIT_PER_BUILD;
     let afBudget = Math.max(0, (await budgetRemaining()) - 6); // keep headroom
 
-    // Recalibration curve learned from the grading log; undefined (→ identity)
-    // until enough predictions have been graded.
+    // Recalibration curves learned from the grading log; undefined (→ identity)
+    // until enough predictions have been graded. 1X2 and corners are learned
+    // separately so a thin corners sample never gates the 1X2 curve.
     const calibrationStats = await getRollingStats();
-    const calibration = calibrationStats
+    const outcomeCal = calibrationStats
         ? buildCalibrationMap(calibrationStats.calibration)
         : undefined;
+    const cornerCal = calibrationStats
+        ? buildCornerCalibrationMap(
+              calibrationStats.cornersCalibration?.over95 ?? [],
+              calibrationStats.cornersCalibration?.over105 ?? [],
+          )
+        : undefined;
+    const calibration =
+        outcomeCal || cornerCal ? { ...outcomeCal, ...cornerCal } : undefined;
 
     // Every team's rolling corners-per-game history, read once for the whole build.
     const cornerRates = await getAllCornerRates();
@@ -270,6 +279,18 @@ async function assemble(): Promise<MatchWithPrediction[]> {
             afRef = await resolveApiFootballFixtureId(fx);
         }
         const apiFootballFixtureId = afRef?.fixtureId;
+
+        // Queue either side for a corner-rate backfill when the venue it's about
+        // to play has a thin sample. No API cost — just a KV add on data already
+        // in hand; the grade cron drains it a few teams a day.
+        if (afRef) {
+            void queueBackfillIfNeeded(afRef.homeId, cornerRates[afRef.homeId], 'atHome').catch(
+                () => {},
+            );
+            void queueBackfillIfNeeded(afRef.awayId, cornerRates[afRef.awayId], 'atAway').catch(
+                () => {},
+            );
+        }
 
         let dataQuality: EnrichedMatch['dataQuality'] = 'core';
         let providerOutcome: EnrichedMatch['providerOutcome'];

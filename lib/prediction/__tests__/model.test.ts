@@ -13,12 +13,14 @@ import { blendOutcomes } from '@/lib/prediction/ensemble';
 import {
     blendedExpectedCorners,
     cornersMarket,
+    cornersOverProbability,
     expectedCorners,
     CORNER_RATES_MIN_N,
 } from '@/lib/prediction/corners';
 import { LEAGUES } from '@/lib/leagues';
 import {
     buildCalibrationMap,
+    buildCornerCalibrationMap,
     calibrateOutcome,
     CALIBRATION_MIN_TOTAL,
 } from '@/lib/prediction/calibrate';
@@ -222,7 +224,19 @@ test('predictMatch: an active calibration map reshapes the outcome, no map is a 
     assert.deepEqual(predictMatch(match, { calibration: undefined }).outcome, raw.outcome);
 });
 
-// --- corners: proxy vs team-rate blend -----------------------------------
+// --- corners: proxy vs venue-split team-rate blend ----------------------
+
+const venue = (f: number, a: number, n: number) => ({ for: f, against: a, n });
+/** Build a two-sided CornerRates with each team's atHome / atAway split. */
+const rates = (
+    homeAtHome: ReturnType<typeof venue>,
+    homeAtAway: ReturnType<typeof venue>,
+    awayAtHome: ReturnType<typeof venue>,
+    awayAtAway: ReturnType<typeof venue>,
+) => ({
+    home: { atHome: homeAtHome, atAway: homeAtAway },
+    away: { atHome: awayAtHome, atAway: awayAtAway },
+});
 
 test('expectedCorners proxy scales with projected goals, clamped to [6,15]', () => {
     const pl = LEAGUES.PL;
@@ -232,26 +246,53 @@ test('expectedCorners proxy scales with projected goals, clamped to [6,15]', () 
     assert.ok(quiet >= 6 && busy <= 15);
 });
 
-test('blendedExpectedCorners: proxy alone until both sides have enough games', () => {
+test('blendedExpectedCorners: proxy alone until both sides have enough venue games', () => {
     const proxy = 10;
     assert.deepEqual(blendedExpectedCorners(proxy, undefined), { expected: 10, source: 'proxy' });
-    const thin = {
-        home: { for: 7, against: 4, n: CORNER_RATES_MIN_N - 1 },
-        away: { for: 6, against: 5, n: 10 },
-    };
+    // Home side thin *at home* (where it's about to play) — proxy, even though
+    // its away sample is deep.
+    const thin = rates(
+        venue(7, 4, CORNER_RATES_MIN_N - 1),
+        venue(7, 4, 12),
+        venue(6, 5, 12),
+        venue(6, 5, 12),
+    );
     assert.equal(blendedExpectedCorners(proxy, thin).source, 'proxy');
 });
 
 test('blendedExpectedCorners: a high-corner pairing pulls the total above the proxy', () => {
     const proxy = 9.5;
-    const highBoth = {
-        home: { for: 7.5, against: 6.5, n: 12 },
-        away: { for: 7, against: 6, n: 12 },
-    };
+    const highBoth = rates(
+        venue(7.5, 6.5, 12), // home at home
+        venue(5, 5, 12),
+        venue(5, 5, 12),
+        venue(7, 6, 12), // away, away
+    );
     const res = blendedExpectedCorners(proxy, highBoth);
     assert.equal(res.source, 'team-rates');
     assert.ok(res.expected > proxy, 'blended estimate exceeds the proxy for two corner-heavy sides');
     assert.ok(res.expected <= 15);
+});
+
+test('blendedExpectedCorners: each side is judged on its venue-correct rate', () => {
+    const base = rates(venue(6, 5, 10), venue(6, 5, 10), venue(6, 5, 10), venue(6, 5, 10));
+    // Bumping the home team's *away* rate must not move the estimate...
+    const bumpAway = {
+        ...base,
+        home: { ...base.home, atAway: venue(15, 0, 10) },
+    };
+    assert.equal(
+        blendedExpectedCorners(10, bumpAway).expected,
+        blendedExpectedCorners(10, base).expected,
+    );
+    // ...but bumping its *home* rate must.
+    const bumpHome = {
+        ...base,
+        home: { ...base.home, atHome: venue(15, 0, 10) },
+    };
+    assert.ok(
+        blendedExpectedCorners(10, bumpHome).expected > blendedExpectedCorners(10, base).expected,
+    );
 });
 
 test('cornersMarket: team-rates shift the lines and expose the source', () => {
@@ -259,13 +300,68 @@ test('cornersMarket: team-rates shift the lines and expose the source', () => {
     const base = cornersMarket(1.6, 1.3, pl);
     assert.equal(base.source, 'proxy');
 
-    const withRates = cornersMarket(1.6, 1.3, pl, {
-        home: { for: 7.5, against: 6.5, n: 12 },
-        away: { for: 7.2, against: 6.1, n: 12 },
-    });
+    const withRates = cornersMarket(
+        1.6,
+        1.3,
+        pl,
+        rates(venue(7.5, 6.5, 12), venue(5, 5, 12), venue(5, 5, 12), venue(7.2, 6.1, 12)),
+    );
     assert.equal(withRates.source, 'team-rates');
     assert.ok(withRates.over95.probability > base.over95.probability);
     // Ladder stays monotonic.
     assert.ok(withRates.over85.probability > withRates.over95.probability);
     assert.ok(withRates.over95.probability > withRates.over105.probability);
+});
+
+test('cornersOverProbability: negative-binomial carries a fatter tail than Poisson', () => {
+    const mean = 12;
+    const nbTail = cornersOverProbability(mean, 15.5);
+    let poissonTail = 0;
+    for (let k = 16; k < 80; k++) poissonTail += poissonPmf(mean, k);
+    assert.ok(nbTail > poissonTail, 'overdispersion puts more mass in the far tail');
+    assert.ok(nbTail > 0 && nbTail < 1);
+});
+
+test('cornersMarket: corners calibration curves reshape the traded lines, ladder intact', () => {
+    const pl = LEAGUES.PL;
+    const raw = cornersMarket(1.6, 1.4, pl);
+    // "When the model says ~0.5 over, it really lands ~0.4."
+    const down = [
+        { x: 0, y: 0 },
+        { x: 0.3, y: 0.3 },
+        { x: 0.5, y: 0.4 },
+        { x: 1, y: 1 },
+    ];
+    const cal = cornersMarket(1.6, 1.4, pl, undefined, { corners95: down, corners105: down });
+    assert.ok(cal.over95.probability < raw.over95.probability, 'over-9.5 pulled down');
+    assert.ok(cal.over105.probability < raw.over105.probability, 'over-10.5 pulled down');
+    // Ladder stays non-increasing after calibration and without it.
+    assert.ok(cal.over85.probability >= cal.over95.probability);
+    assert.ok(cal.over95.probability >= cal.over105.probability);
+    assert.ok(cal.over105.probability >= cal.over115.probability);
+    assert.ok(raw.over85.probability >= raw.over95.probability);
+    assert.ok(raw.over95.probability >= raw.over105.probability);
+});
+
+test('buildCornerCalibrationMap: identity until enough graded, then a monotonic curve', () => {
+    const thin95 = calBins([{ x: 0.6, hitRate: 0.6, n: 50 }]);
+    const thin105 = calBins([{ x: 0.5, hitRate: 0.5, n: 50 }]);
+    assert.equal(buildCornerCalibrationMap(thin95, thin105), undefined);
+
+    const full95 = calBins([
+        { x: 0.45, hitRate: 0.35, n: 80 },
+        { x: 0.65, hitRate: 0.5, n: 90 },
+    ]);
+    const full105 = calBins([
+        { x: 0.4, hitRate: 0.3, n: 80 },
+        { x: 0.6, hitRate: 0.46, n: 90 },
+    ]);
+    const map = buildCornerCalibrationMap(full95, full105);
+    assert.ok(map?.corners95 && map.corners95.length >= 3);
+    assert.ok(map?.corners105);
+    for (const pts of [map.corners95, map.corners105]) {
+        for (let i = 1; i < pts.length; i++) {
+            assert.ok(pts[i].x >= pts[i - 1].x && pts[i].y >= pts[i - 1].y);
+        }
+    }
 });

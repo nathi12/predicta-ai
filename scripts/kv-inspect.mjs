@@ -35,8 +35,11 @@ console.log('pred:corners:pending ->', cornersPending.length, 'ids');
 const stats = await redis.get('stats:rolling');
 console.log('stats:rolling ->', stats ? `${stats.outcome?.n ?? 0} graded` : 'none yet (expected)');
 
-const cornerRates = await redis.get('corners:rates:v1');
+const cornerRates = await redis.get('corners:rates:v2');
 console.log(
-    'corners:rates:v1 ->',
+    'corners:rates:v2 ->',
     cornerRates ? `${Object.keys(cornerRates).length} teams with history` : 'none yet (expected)',
 );
+
+const backfillQueue = await redis.smembers('corners:backfill:queue');
+console.log('corners:backfill:queue ->', backfillQueue.length, 'teams awaiting backfill');

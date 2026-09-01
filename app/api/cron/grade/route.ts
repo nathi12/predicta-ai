@@ -15,7 +15,13 @@ import { CRON_SECRET } from '@/lib/env';
 import { log } from '@/lib/log';
 import type { SlipRecord, TrackedPrediction } from '@/types';
 import { getMatchesByIds, type FDMatch } from '@/services/footballData';
-import { budgetRemaining, cornersBudgetRemaining, getFixtureCorners } from '@/services/apiFootball';
+import {
+    budgetRemaining,
+    cornersBudgetRemaining,
+    cornersBackfillBudgetRemaining,
+    getFixtureCorners,
+    getTeamRecentFixtures,
+} from '@/services/apiFootball';
 import {
     gradePrediction,
     pendingMatchIds,
@@ -25,6 +31,11 @@ import {
     gradeCorners,
     discardPendingCorner,
 } from '@/lib/tracking';
+import {
+    pendingBackfillTeamIds,
+    dequeueBackfillTeam,
+    foldFixtureCorners,
+} from '@/lib/cornerRates';
 import { gradeSlip, getSlip, pendingSlipIds } from '@/lib/slipTracking';
 import { warmUpcomingMatches } from '@/lib/matchData';
 import { warmUpcomingOdds } from '@/lib/oddsData';
@@ -73,7 +84,15 @@ async function run() {
 
     if (duePreds.length === 0 && dueSlips.length === 0) {
         const corners = await drainCorners(now);
-        return { pendingPreds: predIds.length, pendingSlips: slipIds.length, graded: 0, slipsGraded: 0, ...corners };
+        const backfill = await drainCornerBackfill();
+        return {
+            pendingPreds: predIds.length,
+            pendingSlips: slipIds.length,
+            graded: 0,
+            slipsGraded: 0,
+            ...corners,
+            ...backfill,
+        };
     }
 
     // --- one batched final-score lookup for everything --------------
@@ -113,6 +132,7 @@ async function run() {
     }
 
     const corners = await drainCorners(now);
+    const backfill = await drainCornerBackfill();
 
     return {
         pendingPreds: predIds.length,
@@ -122,6 +142,7 @@ async function run() {
         graded,
         slipsGraded,
         ...corners,
+        ...backfill,
     };
 }
 
@@ -176,6 +197,58 @@ async function drainCorners(now: number): Promise<{ pendingCorners: number; corn
     }
 
     return { pendingCorners: ids.length, cornersGraded };
+}
+
+// Seed the venue-split corner-rate history straight from the provider for teams
+// that are about to play but don't have enough graded games yet (queued by
+// lib/matchData.ts). Its own sub-budget keeps it clear of live grading; full
+// coverage builds up over weeks, aimed at the teams that matter first.
+const BACKFILL_TEAMS_PER_RUN = 4;
+const BACKFILL_LAST = 8;
+
+async function drainCornerBackfill(): Promise<{ backfillTeams: number; backfillFolded: number }> {
+    const teamIds = await pendingBackfillTeamIds();
+    if (teamIds.length === 0) return { backfillTeams: 0, backfillFolded: 0 };
+
+    const [shared, backfillBudget] = await Promise.all([
+        budgetRemaining(),
+        cornersBackfillBudgetRemaining(),
+    ]);
+    if (backfillBudget <= 0 || shared - AF_BUDGET_HEADROOM <= 0) {
+        return { backfillTeams: 0, backfillFolded: 0 };
+    }
+
+    let backfillTeams = 0;
+    let backfillFolded = 0;
+    for (const teamId of teamIds.slice(0, BACKFILL_TEAMS_PER_RUN)) {
+        // Only start a team when the shared budget can absorb its worst case.
+        if ((await budgetRemaining()) - AF_BUDGET_HEADROOM <= BACKFILL_LAST) break;
+
+        const fixtures = await getTeamRecentFixtures(teamId, BACKFILL_LAST);
+        if (fixtures == null) break; // provider down or budget spent — retry next run
+
+        let starved = false;
+        for (const fx of fixtures) {
+            const corners = await getFixtureCorners(fx.fixtureId, 'backfill');
+            if (corners == null) {
+                // null is "stats not up" (skip) or "sub-budget spent" (stop).
+                if ((await cornersBackfillBudgetRemaining()) <= 0) {
+                    starved = true;
+                    break;
+                }
+                continue;
+            }
+            if (await foldFixtureCorners(fx.fixtureId, corners.byTeamId, fx.homeId, fx.awayId)) {
+                backfillFolded++;
+            }
+        }
+        if (starved) break;
+        // Anything still thin for this team gets re-queued by the next slate build.
+        await dequeueBackfillTeam(teamId);
+        backfillTeams++;
+    }
+
+    return { backfillTeams, backfillFolded };
 }
 
 /**

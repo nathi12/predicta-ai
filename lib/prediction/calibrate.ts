@@ -7,9 +7,15 @@
 
 import type { DataQuality, HeadToHead, OutcomeProbabilities, RollingStats } from '@/types';
 
+export type CalibrationCurve = Array<{ x: number; y: number }>;
+
 export interface CalibrationMap {
     /** Piecewise-linear points mapping raw favourite prob -> observed rate. */
-    outcome?: Array<{ x: number; y: number }>;
+    outcome?: CalibrationCurve;
+    /** Same idea for the corners over-9.5 / over-10.5 probabilities, learned
+     *  from their own grading bins. Absent until corners have enough history. */
+    corners95?: CalibrationCurve;
+    corners105?: CalibrationCurve;
 }
 
 // --- learning the map from the grading log --------------------------------
@@ -20,22 +26,20 @@ export const CALIBRATION_MIN_TOTAL = 150;
 export const CALIBRATION_MIN_BIN = 20;
 /** Pulls each bin's correction back toward the identity until it's well-sampled. */
 export const CALIBRATION_BIN_PRIOR = 40;
+/** Combined graded lines (over-9.5 + over-10.5) before corners recalibration goes live. */
+export const CORNERS_CALIBRATION_MIN_TOTAL = 150;
+
+type CalBin = { predicted: number; actual: number; n: number };
 
 /**
- * Turn the grading log's favourite-probability calibration bins (predicted vs
- * observed by decile, see foldIntoRolling) into a piecewise-linear recalibration
- * curve. Returns undefined — i.e. the identity, a no-op in calibrateOutcome —
- * until there's enough graded history to trust, so predictions are never blocked
- * on having a track record.
+ * Turn one market's calibration bins (predicted vs observed by decile, see
+ * foldIntoRolling) into a monotonic piecewise-linear recalibration curve,
+ * anchored at (0,0)/(1,1) and holding the identity below the range the data
+ * actually informs. Returns undefined until two bins clear CALIBRATION_MIN_BIN.
  *
- * Note the loop is mildly self-referential once live: new predictions are stored
- * already-calibrated, so the bins then measure the *residual* error and the map
- * converges. The per-bin shrinkage below keeps that stable.
+ * Shared by the 1X2 and corners maps so both learn the curve the same way.
  */
-export function buildCalibrationMap(bins: RollingStats['calibration']): CalibrationMap | undefined {
-    const total = bins.reduce((s, b) => s + b.n, 0);
-    if (total < CALIBRATION_MIN_TOTAL) return undefined;
-
+function curveFromBins(bins: CalBin[]): CalibrationCurve | undefined {
     const learned = bins
         .filter((b) => b.n >= CALIBRATION_MIN_BIN)
         .map((b) => {
@@ -48,10 +52,9 @@ export function buildCalibrationMap(bins: RollingStats['calibration']): Calibrat
 
     if (learned.length < 2) return undefined;
 
-    // The grading log only informs the range 1X2 favourites actually occupy
-    // (~0.34–0.9); below that we have no signal, so hold the identity. The
-    // low anchor keeps calibrateOutcome's renormalisation sound: a shed
-    // favourite probability flows to the field instead of being scaled away.
+    // Below the range the bins inform we have no signal, so hold the identity.
+    // For 1X2 this keeps calibrateOutcome's renormalisation sound (a shed
+    // favourite probability flows to the field instead of being scaled away).
     const loX = Math.max(0, Math.min(0.3, learned[0].x - 0.02));
 
     const points = [{ x: 0, y: 0 }];
@@ -66,10 +69,50 @@ export function buildCalibrationMap(bins: RollingStats['calibration']): Calibrat
     }
     points.push({ x: 1, y: 1 });
 
-    return { outcome: points };
+    return points;
 }
 
-function applyPiecewise(p: number, points?: Array<{ x: number; y: number }>): number {
+/**
+ * Build the 1X2 recalibration curve from the grading log's favourite-probability
+ * bins. Returns undefined — i.e. the identity, a no-op in calibrateOutcome —
+ * until there's enough graded history to trust, so predictions are never blocked
+ * on having a track record.
+ *
+ * Note the loop is mildly self-referential once live: new predictions are stored
+ * already-calibrated, so the bins then measure the *residual* error and the map
+ * converges. The per-bin shrinkage keeps that stable.
+ */
+export function buildCalibrationMap(bins: RollingStats['calibration']): CalibrationMap | undefined {
+    const total = bins.reduce((s, b) => s + b.n, 0);
+    if (total < CALIBRATION_MIN_TOTAL) return undefined;
+    const outcome = curveFromBins(bins);
+    return outcome ? { outcome } : undefined;
+}
+
+/**
+ * Build the corners recalibration curves (one per line) from their grading bins.
+ * Same construction as the 1X2 map; kept separate so a thin corners sample never
+ * gates the 1X2 curve and vice versa. Returns undefined until there's enough
+ * combined graded history, so corners lines are untouched until then.
+ */
+export function buildCornerCalibrationMap(
+    bins95: RollingStats['calibration'],
+    bins105: RollingStats['calibration'],
+): Pick<CalibrationMap, 'corners95' | 'corners105'> | undefined {
+    const total =
+        bins95.reduce((s, b) => s + b.n, 0) + bins105.reduce((s, b) => s + b.n, 0);
+    if (total < CORNERS_CALIBRATION_MIN_TOTAL) return undefined;
+    const corners95 = curveFromBins(bins95);
+    const corners105 = curveFromBins(bins105);
+    if (!corners95 && !corners105) return undefined;
+    return {
+        ...(corners95 ? { corners95 } : {}),
+        ...(corners105 ? { corners105 } : {}),
+    };
+}
+
+/** Map a probability through a piecewise-linear curve. No curve => identity. */
+export function applyPiecewise(p: number, points?: CalibrationCurve): number {
     if (!points || points.length < 2) return p;
     const pts = [...points].sort((a, b) => a.x - b.x);
     if (p <= pts[0].x) return pts[0].y;

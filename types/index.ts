@@ -141,14 +141,26 @@ export interface MarketProbabilities {
     } | null;
 }
 
-/** Rolling corners-per-game history for one team, from API-Football match stats. */
-export interface CornerRate {
-    /** Mean corners won per game over the sampled window. */
+/** Corners won/conceded per game over one venue's sampled window. */
+export interface VenueCornerRate {
+    /** Mean corners won per game. */
     for: number;
     /** Mean corners conceded per game. */
     against: number;
     /** Games in the sample. */
     n: number;
+}
+
+/**
+ * Rolling corners-per-game history for one team, from API-Football match stats,
+ * split by venue — home teams reliably win more corners than they do away, so
+ * the blend pairs each side's venue-correct rate with the other's.
+ */
+export interface CornerRate {
+    /** This team's rate in matches it played at home. */
+    atHome: VenueCornerRate;
+    /** This team's rate in matches it played away. */
+    atAway: VenueCornerRate;
 }
 
 export interface Scoreline {
@@ -194,6 +206,10 @@ export interface TrackedPrediction {
     /** API-Football fixture id, resolved before kickoff. The only feed with
      *  corner counts, so corners can't be graded without it. */
     apiFootballFixtureId?: number;
+    /** API-Football team ids, resolved with the fixture id. Let the corners
+     *  grader attribute each side's count to the right venue. */
+    apiFootballHomeId?: number;
+    apiFootballAwayId?: number;
     modelVersion: string;
     createdAt: string;
 }
@@ -230,6 +246,14 @@ export interface MarketStat {
     brier: number;
 }
 
+/** One decile bucket of a market's calibration: summed forecast, hits, count. */
+export interface CalibrationBin {
+    bin: number;
+    predicted: number;
+    actual: number;
+    n: number;
+}
+
 export interface RollingStats {
     updatedAt: string;
     window: '30d' | '90d' | 'all';
@@ -241,7 +265,9 @@ export interface RollingStats {
     corners95: MarketStat;
     corners105: MarketStat;
     /** Calibration bins for the 1X2 favourite: predicted vs actual by decile. */
-    calibration: Array<{ bin: number; predicted: number; actual: number; n: number }>;
+    calibration: CalibrationBin[];
+    /** Calibration bins for the corners over-9.5 / over-10.5 lines. */
+    cornersCalibration: { over95: CalibrationBin[]; over105: CalibrationBin[] };
     byLeague: Partial<Record<LeagueCode, MarketStat>>;
 }
 
