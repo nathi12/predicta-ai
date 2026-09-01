@@ -70,6 +70,8 @@ function makeMatch(o: MatchOpts): MatchWithPrediction {
                           over95: line(0.55),
                           over105: line(0.4),
                           over115: line(0.28),
+                          expected: 10.2,
+                          source: 'proxy' as const,
                       }
                     : null,
             },

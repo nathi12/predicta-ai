@@ -23,11 +23,20 @@ for (const k of keys) {
 console.log(`total keys: ${keys.length}\n`);
 console.table(groups);
 
-const matches = await redis.get('matches:v4');
-console.log('\nmatches:v4 ->', Array.isArray(matches) ? `${matches.length} fixtures` : matches);
+const matches = await redis.get('matches:v7');
+console.log('\nmatches:v7 ->', Array.isArray(matches) ? `${matches.length} fixtures` : matches);
 
 const pending = await redis.smembers('pred:pending');
 console.log('pred:pending ->', pending.length, 'ids');
 
+const cornersPending = await redis.smembers('pred:corners:pending');
+console.log('pred:corners:pending ->', cornersPending.length, 'ids');
+
 const stats = await redis.get('stats:rolling');
 console.log('stats:rolling ->', stats ? `${stats.outcome?.n ?? 0} graded` : 'none yet (expected)');
+
+const cornerRates = await redis.get('corners:rates:v1');
+console.log(
+    'corners:rates:v1 ->',
+    cornerRates ? `${Object.keys(cornerRates).length} teams with history` : 'none yet (expected)',
+);

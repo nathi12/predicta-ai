@@ -22,15 +22,19 @@ import {
 import { computeLeagueAverages, baseExpectedGoals, formPoints, type LeagueAverages } from './strength';
 import { eloOutcome } from './elo';
 import { blendOutcomes } from './ensemble';
-import { cornersMarket } from './corners';
+import { cornersMarket, type CornerRates } from './corners';
 import { calibrateOutcome, confidenceScore, type CalibrationMap } from './calibrate';
 
-export const MODEL_VERSION = '2.0.0';
+// 2.2.0 — corners lines blended with each side's real corners-for/against history
+// when available; outcome probabilities recalibrated against the grading log.
+export const MODEL_VERSION = '2.2.0';
 
 export interface PredictOptions {
     /** Precomputed league averages (from the HOME/AWAY standings tables). */
     leagueAverages?: LeagueAverages;
     calibration?: CalibrationMap;
+    /** Each side's rolling corners-per-game history, when we have it. */
+    cornerRates?: CornerRates;
 }
 
 function goalsLine(prob: number, over: number, under: number): MarketLine {
@@ -91,12 +95,14 @@ export function predictMatch(match: EnrichedMatch, opts: PredictOptions = {}): M
         over35: goalsLine(overProbability(matrix, 3.5), 0.5, 0.35),
         btts: bttsLine(bttsProbability(matrix)),
         corners: (() => {
-            const c = cornersMarket(lambdaHome, lambdaAway, league);
+            const c = cornersMarket(lambdaHome, lambdaAway, league, opts.cornerRates);
             return {
                 over85: c.over85,
                 over95: c.over95,
                 over105: c.over105,
                 over115: c.over115,
+                expected: c.expected,
+                source: c.source,
             };
         })(),
     };

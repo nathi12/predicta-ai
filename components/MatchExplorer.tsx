@@ -59,6 +59,7 @@ export function MatchExplorer({ matches }: { matches: MatchWithPrediction[] }) {
         date: 'all',
         sort: 'kickoff',
         expandAll: false,
+        enrichedOnly: false,
     });
 
     const leagues = useMemo(() => {
@@ -75,7 +76,8 @@ export function MatchExplorer({ matches }: { matches: MatchWithPrediction[] }) {
         const filtered = matches.filter(
             (m) =>
                 (filters.league === 'all' || m.match.league === filters.league) &&
-                inBucket(m.match.kickoff, filters.date),
+                inBucket(m.match.kickoff, filters.date) &&
+                (!filters.enrichedOnly || m.match.dataQuality === 'enriched'),
         );
         return [...filtered].sort((a, b) => {
             if (filters.sort === 'kickoff') {
@@ -86,12 +88,18 @@ export function MatchExplorer({ matches }: { matches: MatchWithPrediction[] }) {
         });
     }, [matches, filters]);
 
+    const enrichedCount = useMemo(
+        () => visible.filter((m) => m.match.dataQuality === 'enriched').length,
+        [visible],
+    );
+
     return (
         <div className="space-y-4">
             <FilterBar filters={filters} leagues={leagues} onChange={setFilters} />
 
             <p className="text-xs text-text-faint" aria-live="polite">
                 {visible.length} {visible.length === 1 ? 'match' : 'matches'}
+                {!filters.enrichedOnly && enrichedCount > 0 && <> · {enrichedCount} enriched</>}
                 {ranked && <> · ranked by {MARKET_LABEL[filters.sort]} probability</>}
             </p>
 

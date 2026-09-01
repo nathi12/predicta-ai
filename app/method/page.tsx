@@ -54,8 +54,10 @@ export default function MethodPage() {
                 <p>
                     Confidence is a real quantity — the sharpness of the outcome distribution scaled
                     by how much data backs it — not a marketing number. Predictions are logged and
-                    graded against results, and a calibration map learned from that history is folded
-                    back in. The measured hit rate lives on the{' '}
+                    graded against results. Once enough have been graded, a recalibration curve —
+                    how often a forecast of a given probability actually lands — is relearned from
+                    that log on every rebuild and folded back into the 1X2 output, so the numbers
+                    track their own track record. It lives on the{' '}
                     <a className="text-accent underline-offset-2 hover:underline" href="/accuracy">
                         accuracy page
                     </a>
@@ -89,9 +91,10 @@ export default function MethodPage() {
                 <h2 className="text-base font-semibold text-text">Limitations</h2>
                 <p>
                     The model has no knowledge of injuries, suspensions, line-ups, motivation, weather
-                    or in-game events. Corner predictions are a proxy from attacking volume, not real
-                    corner data, and are the least reliable market shown. Newly promoted teams have
-                    thin data until several rounds have been played.
+                    or in-game events. Corner predictions start as a proxy from attacking volume;
+                    once both teams have a handful of graded games, their real corners-for/against
+                    history is blended in, but this is still the least reliable market shown. Newly
+                    promoted teams have thin data until several rounds have been played.
                 </p>
             </section>
         </article>

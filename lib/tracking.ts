@@ -5,6 +5,7 @@
 import 'server-only';
 import { store } from '@/lib/kv';
 import { hasApiFootball } from '@/lib/env';
+import { recordTeamCorners } from '@/lib/cornerRates';
 import type {
     EnrichedMatch,
     GradedResult,
@@ -138,11 +139,17 @@ export async function discardPendingCorner(matchId: string): Promise<void> {
 }
 
 /**
- * Grade the corners markets for an already-scored prediction against a real
- * corner total, and fold them into the rolling aggregate. Idempotent-ish: the
- * match leaves the queue whether or not it could be graded.
+ * Grade the corners markets for an already-scored prediction against real corner
+ * counts, fold the hit/miss into the rolling aggregate, and fold each side's
+ * count into its rolling corner-rate history. All of it runs past one
+ * idempotency gate, so a match is only ever counted once. The match leaves the
+ * queue whether or not it could be graded.
  */
-export async function gradeCorners(matchId: string, totalCorners: number): Promise<boolean> {
+export async function gradeCorners(
+    matchId: string,
+    totalCorners: number,
+    byTeamId?: Record<number, number>,
+): Promise<boolean> {
     const [tracked, result] = await Promise.all([
         getTracked(matchId),
         store.get<GradedResult>(resultKey(matchId)),
@@ -172,6 +179,8 @@ export async function gradeCorners(matchId: string, totalCorners: number): Promi
     stats.corners105.hits += hit105 ? 1 : 0;
     stats.updatedAt = new Date().toISOString();
     await store.set('stats:rolling', stats);
+
+    if (byTeamId) await recordTeamCorners(byTeamId).catch(() => {});
 
     await store.srem(CORNERS_PENDING_SET, matchId);
     return true;

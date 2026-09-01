@@ -79,6 +79,10 @@ export interface EnrichedMatch {
     id: string;
     footballDataId: number;
     apiFootballFixtureId?: number;
+    /** API-Football team ids, resolved with the fixture id. Exact key for the
+     *  per-team corners-rate history. */
+    apiFootballHomeId?: number;
+    apiFootballAwayId?: number;
     league: LeagueCode;
     leagueName: string;
     /** ISO kickoff time (UTC). */
@@ -129,7 +133,22 @@ export interface MarketProbabilities {
         over95: MarketLine;
         over105: MarketLine;
         over115: MarketLine;
+        /** Expected total corners the lines are derived from. */
+        expected: number;
+        /** 'proxy' = scaled off expected goals; 'team-rates' = blended with each
+         *  side's real corners-for/against history from API-Football. */
+        source: 'proxy' | 'team-rates';
     } | null;
+}
+
+/** Rolling corners-per-game history for one team, from API-Football match stats. */
+export interface CornerRate {
+    /** Mean corners won per game over the sampled window. */
+    for: number;
+    /** Mean corners conceded per game. */
+    against: number;
+    /** Games in the sample. */
+    n: number;
 }
 
 export interface Scoreline {

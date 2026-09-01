@@ -21,12 +21,15 @@ import {
     getFixturesByDate,
     getFixtureInsight,
     normalizeTeam,
+    type AFFixtureRef,
     type ApiFootballInsight,
 } from '@/services/apiFootball';
 import { buildRatings, seedFromRecord, type FinishedResult } from '@/lib/prediction/elo';
 import { computeLeagueAverages } from '@/lib/prediction/strength';
+import { buildCalibrationMap } from '@/lib/prediction/calibrate';
 import { predictMatch } from '@/lib/prediction';
-import { recordPrediction } from '@/lib/tracking';
+import { recordPrediction, getRollingStats } from '@/lib/tracking';
+import { getAllCornerRates, pickRates } from '@/lib/cornerRates';
 import type {
     EnrichedMatch,
     HeadToHead,
@@ -235,6 +238,16 @@ async function assemble(): Promise<MatchWithPrediction[]> {
     let h2hBudget = H2H_LIMIT_PER_BUILD;
     let afBudget = Math.max(0, (await budgetRemaining()) - 6); // keep headroom
 
+    // Recalibration curve learned from the grading log; undefined (→ identity)
+    // until enough predictions have been graded.
+    const calibrationStats = await getRollingStats();
+    const calibration = calibrationStats
+        ? buildCalibrationMap(calibrationStats.calibration)
+        : undefined;
+
+    // Every team's rolling corners-per-game history, read once for the whole build.
+    const cornerRates = await getAllCornerRates();
+
     const out: MatchWithPrediction[] = [];
 
     for (const { bundle, fx } of pending) {
@@ -249,13 +262,14 @@ async function assemble(): Promise<MatchWithPrediction[]> {
             h2hBudget--;
         }
 
-        // Resolve the API-Football fixture id for near-term fixtures — the slip
-        // builder needs it to fetch odds, whether or not this fixture is enriched.
-        // Gated on a healthy budget; it shares the cached fixture index enrich uses.
-        let apiFootballFixtureId: number | undefined;
+        // Resolve the API-Football fixture + team ids for near-term fixtures — the
+        // slip builder needs the fixture id for odds, the corners model needs the
+        // team ids. Gated on a healthy budget; shares the cached fixture index.
+        let afRef: AFFixtureRef | undefined;
         if (hasApiFootball() && afBudget >= 2 && hoursAhead > 0 && hoursAhead <= AF_ID_HOURS_AHEAD) {
-            apiFootballFixtureId = await resolveApiFootballFixtureId(fx);
+            afRef = await resolveApiFootballFixtureId(fx);
         }
+        const apiFootballFixtureId = afRef?.fixtureId;
 
         let dataQuality: EnrichedMatch['dataQuality'] = 'core';
         let providerOutcome: EnrichedMatch['providerOutcome'];
@@ -277,6 +291,8 @@ async function assemble(): Promise<MatchWithPrediction[]> {
             id: `${bundle.code}-${fx.id}`,
             footballDataId: fx.id,
             apiFootballFixtureId,
+            apiFootballHomeId: afRef?.homeId,
+            apiFootballAwayId: afRef?.awayId,
             league: bundle.code,
             leagueName: cfg.name,
             kickoff: fx.utcDate,
@@ -288,7 +304,11 @@ async function assemble(): Promise<MatchWithPrediction[]> {
             dataQuality,
         };
 
-        const prediction = predictMatch(match, { leagueAverages: bundle.averages });
+        const prediction = predictMatch(match, {
+            leagueAverages: bundle.averages,
+            calibration,
+            cornerRates: pickRates(cornerRates, afRef?.homeId, afRef?.awayId),
+        });
         out.push({ match, prediction });
 
         // Fire-and-forget: persist for later grading.
@@ -300,8 +320,8 @@ async function assemble(): Promise<MatchWithPrediction[]> {
     return out;
 }
 
-/** Match a Football-Data fixture to its API-Football id via the by-date index. */
-async function resolveApiFootballFixtureId(fx: FDMatch): Promise<number | undefined> {
+/** Match a Football-Data fixture to its API-Football fixture + team ids. */
+async function resolveApiFootballFixtureId(fx: FDMatch): Promise<AFFixtureRef | undefined> {
     try {
         const day = fx.utcDate.slice(0, 10);
         const index = await getFixturesByDate(day);
@@ -322,10 +342,10 @@ async function resolveApiFootballFixtureId(fx: FDMatch): Promise<number | undefi
 }
 
 async function enrich(code: LeagueCode, fx: FDMatch): Promise<ApiFootballInsight | null> {
-    const fixtureId = await resolveApiFootballFixtureId(fx);
-    if (!fixtureId) return null;
+    const ref = await resolveApiFootballFixtureId(fx);
+    if (!ref) return null;
     try {
-        return await getFixtureInsight(fixtureId);
+        return await getFixtureInsight(ref.fixtureId);
     } catch (err) {
         log.warn(`enrich ${code} failed`, (err as Error).message);
         return null;
@@ -344,8 +364,10 @@ function applyInsight(home: TeamStrength, away: TeamStrength, insight: ApiFootba
     if (Number.isFinite(insight.away.recentFor)) away.enriched = sideToEnrichment(insight.away);
 }
 
-const CACHE_KEY = 'matches:v6';
-const STALE_KEY = 'matches:v6:stale';
+// v7: EnrichedMatch carries API-Football team ids; corners markets carry an
+// expected total + source. Bump forces a clean rebuild past the old shape.
+const CACHE_KEY = 'matches:v7';
+const STALE_KEY = 'matches:v7:stale';
 const FRESH_TTL = 15 * 60;
 const STALE_TTL = 48 * 60 * 60;
 

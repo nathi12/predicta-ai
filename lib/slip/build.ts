@@ -99,7 +99,7 @@ function finalize(legs: Selection[], req: SlipRequest, meta: FinalizeMeta): BetS
     const proxy = legs.filter((l) => !l.autoGradable).length;
     if (proxy > 0) {
         warnings.push(
-            `${proxy} leg${proxy > 1 ? 's use' : ' uses'} the corners proxy — an estimate from attacking volume, not a corner-count feed — and ${proxy > 1 ? 'are' : 'is'} excluded from the tracked record.`,
+            `${proxy} corners leg${proxy > 1 ? 's are' : ' is'} lower-confidence and ${proxy > 1 ? 'are' : 'is'} excluded from the tracked record.`,
         );
     }
 

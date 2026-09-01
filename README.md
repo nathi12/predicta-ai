@@ -31,13 +31,17 @@ Full write-up at [`/method`](https://predicta-ai-tpke.vercel.app/method). In sho
 5. **Enrichment** — for imminent fixtures, within a strict daily API budget,
    live form and the provider's own probabilities from API-Football are blended
    in. Those fixtures are marked *Enriched*; the rest run on *Core data*.
-6. **Calibration** — a map learned from the grading log is folded back in;
+6. **Calibration** — once ~150 predictions have been graded, a recalibration
+   curve learned from that log (favourite probability vs how often it actually
+   landed) is relearned on every rebuild and folded back into the 1X2 output;
    confidence is the sharpness of the distribution scaled by data quality.
 
 **Realistic accuracy:** ~53–56% on match outcomes, ~58–68% on goals/BTTS.
-Corners are a proxy and the least reliable market — graded on the /accuracy page
-from API-Football match stats, but only for fixtures matched to it before kickoff.
-Anyone advertising much higher is not measuring honestly.
+Corners start as a proxy off expected goals; once both sides have a few graded
+games, each team's real corners-for/against history (from API-Football match
+stats) is blended into the line. Still the least reliable market. Corners are
+also graded on the /accuracy page, for fixtures matched to API-Football before
+kickoff. Anyone advertising much higher is not measuring honestly.
 
 ## Tech
 

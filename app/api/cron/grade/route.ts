@@ -168,9 +168,11 @@ async function drainCorners(now: number): Promise<{ pendingCorners: number; corn
     for (const { matchId, tracked } of queue) {
         if (spent >= cap) break;
         spent++;
-        const total = await getFixtureCorners(tracked.apiFootballFixtureId!);
-        if (total == null) continue; // stats not up yet, or sub-budget spent — retry next run
-        if (await gradeCorners(matchId, total)) cornersGraded++;
+        const corners = await getFixtureCorners(tracked.apiFootballFixtureId!);
+        if (corners == null) continue; // stats not up yet, or sub-budget spent — retry next run
+        // gradeCorners folds both the hit/miss and each side's count into the
+        // model's corner-rate history, once, past its idempotency gate.
+        if (await gradeCorners(matchId, corners.total, corners.byTeamId)) cornersGraded++;
     }
 
     return { pendingCorners: ids.length, cornersGraded };

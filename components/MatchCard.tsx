@@ -169,6 +169,12 @@ export const MatchCard = memo(function MatchCard({
                                 muted
                                 highlight={rankMarket === 'corners105'}
                             />
+                            <p className="pt-0.5 text-[11px] text-text-faint">
+                                ~{g.corners.expected.toFixed(1)} expected ·{' '}
+                                {g.corners.source === 'team-rates'
+                                    ? 'from both sides’ corner history'
+                                    : 'proxy from expected goals'}
+                            </p>
                         </>
                     )}
                 </div>

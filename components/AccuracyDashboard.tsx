@@ -8,6 +8,7 @@ import type {
 } from '@/types';
 import { LEAGUES } from '@/lib/leagues';
 import { SLIP_PRESET_LABEL } from '@/lib/slip/types';
+import { buildCalibrationMap, CALIBRATION_MIN_TOTAL } from '@/lib/prediction/calibrate';
 
 const rate = (hits: number, n: number) => (n > 0 ? hits / n : 0);
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
@@ -94,6 +95,7 @@ function PredictionRecord({
                     about 60% of the time.
                 </p>
                 <CalibrationChart bins={stats.calibration} />
+                <CalibrationStatus stats={stats} />
             </section>
 
             <section>
@@ -262,6 +264,30 @@ function MarketRow({ label, n, hits }: { label: string; n: number; hits: number 
             <td className="py-1.5 text-right text-text-dim">{n}</td>
             <td className="py-1.5 text-right">{n > 0 ? pct(hits / n) : '—'}</td>
         </tr>
+    );
+}
+
+/** Whether the learned recalibration curve is currently feeding back into the model. */
+function CalibrationStatus({ stats }: { stats: RollingStats }) {
+    const graded = stats.calibration.reduce((s, b) => s + b.n, 0);
+    const live = buildCalibrationMap(stats.calibration) !== undefined;
+
+    return (
+        <p className="mt-3 text-xs text-text-faint">
+            {live ? (
+                <>
+                    <span className="text-pos">● Recalibration live</span> — outcome probabilities
+                    are corrected against this curve, relearned from all {graded} graded predictions
+                    on every rebuild.
+                </>
+            ) : (
+                <>
+                    <span className="text-text-dim">○ Running uncalibrated</span> — the model uses
+                    raw probabilities until {CALIBRATION_MIN_TOTAL} predictions are graded ({graded}/
+                    {CALIBRATION_MIN_TOTAL} so far).
+                </>
+            )}
+        </p>
     );
 }
 

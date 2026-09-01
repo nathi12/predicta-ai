@@ -50,7 +50,7 @@ export interface Selection {
     /** Fixture-level model confidence, 20–92. */
     confidence: number;
     dataQuality: DataQuality;
-    /** False for the corners proxy (no real corner-count feed to grade against). */
+    /** False for corners — not graded inside slips. */
     autoGradable: boolean;
     /** One short reason string lifted from the fixture's model drivers. */
     reason: string | null;
@@ -100,8 +100,8 @@ interface RiskConfig {
     allowedMarkets?: SlipMarket[];
 }
 
-// Corners are never auto-selected — the proxy has no real corner-count feed and
-// its probabilities run hot. They're only reachable via single-market mode.
+// Corners are never auto-selected — the model runs hot on them and they're not
+// graded inside slips. They're only reachable via single-market mode.
 const NON_CORNER_MARKETS: SlipMarket[] = [
     'home',
     'away',

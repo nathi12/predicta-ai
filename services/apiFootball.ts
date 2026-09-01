@@ -103,7 +103,14 @@ export function normalizeTeam(name: string): string {
 interface AFFixture {
     fixture: { id: number; date: string };
     league?: { id: number };
-    teams: { home: { name: string }; away: { name: string } };
+    teams: { home: { id: number; name: string }; away: { id: number; name: string } };
+}
+
+/** A resolved API-Football fixture: its id plus both team ids. */
+export interface AFFixtureRef {
+    fixtureId: number;
+    homeId: number;
+    awayId: number;
 }
 
 /** API-Football league ids for the competitions we cover — keeps the index small. */
@@ -117,18 +124,22 @@ const COVERED_AF_LEAGUE_IDS = new Set([39, 140, 135, 78, 61, 88]);
  * `league`+`season` fixture queries for the current season ("Free plans do not
  * have access to this season"), but the by-date endpoint works.
  */
-export async function getFixturesByDate(date: string): Promise<Record<string, number>> {
-    const key = `af:fixtures:date:${date}`;
-    const hit = await store.get<Record<string, number>>(key);
+export async function getFixturesByDate(date: string): Promise<Record<string, AFFixtureRef>> {
+    const key = `af:fixtures:date:v2:${date}`;
+    const hit = await store.get<Record<string, AFFixtureRef>>(key);
     if (hit) return hit;
 
     const data = await afGet<{ response: AFFixture[] }>(`/fixtures?date=${date}`);
-    const index: Record<string, number> = {};
+    const index: Record<string, AFFixtureRef> = {};
     for (const f of data?.response ?? []) {
         if (f.league?.id && !COVERED_AF_LEAGUE_IDS.has(f.league.id)) continue;
         const day = f.fixture.date.slice(0, 10);
         const k = `${normalizeTeam(f.teams.home.name)}|${normalizeTeam(f.teams.away.name)}|${day}`;
-        index[k] = f.fixture.id;
+        index[k] = {
+            fixtureId: f.fixture.id,
+            homeId: f.teams.home.id,
+            awayId: f.teams.away.id,
+        };
     }
     await store.set(key, index, 6 * 60 * 60);
     return index;
@@ -382,11 +393,18 @@ export async function cornersBudgetRemaining(): Promise<number> {
     return Math.max(0, CORNERS_DAILY_CAP - used);
 }
 
-/** Total corners (home + away) for a finished fixture, or null if unavailable. */
-export async function getFixtureCorners(fixtureId: number): Promise<number | null> {
-    const key = `af:corners:${fixtureId}`;
-    const hit = await store.get<{ total: number } | { none: true }>(key);
-    if (hit) return 'none' in hit ? null : hit.total;
+export interface FixtureCorners {
+    /** Home + away corners. */
+    total: number;
+    /** Corners keyed by API-Football team id — exactly the two sides. */
+    byTeamId: Record<number, number>;
+}
+
+/** Per-side corners for a finished fixture, or null if the stats aren't available. */
+export async function getFixtureCorners(fixtureId: number): Promise<FixtureCorners | null> {
+    const key = `af:corners:v2:${fixtureId}`;
+    const hit = await store.get<FixtureCorners | { none: true }>(key);
+    if (hit) return 'none' in hit ? null : hit;
 
     // Cache miss = a real request. Reserve one against the daily sub-budget and
     // the shared budget both (afGet spends the latter); bail before either bites.
@@ -396,21 +414,26 @@ export async function getFixtureCorners(fixtureId: number): Promise<number | nul
         return null;
     }
 
-    const data = await afGet<{ response: Array<{ statistics: AFStatEntry[] }> }>(
-        `/fixtures/statistics?fixture=${fixtureId}`,
-    );
+    const data = await afGet<{
+        response: Array<{ team?: { id?: number }; statistics: AFStatEntry[] }>;
+    }>(`/fixtures/statistics?fixture=${fixtureId}`);
 
     // A finished match returns one entry per side, each with a Corner Kicks stat.
     // Anything less (stats not collected, match not final, a null value) is
     // treated as missing — note Number(null) is 0, so guard the null explicitly.
-    const sides = data?.response ?? [];
-    const counts = sides
-        .map((s) => s.statistics?.find((x) => x.type === 'Corner Kicks')?.value)
-        .map((v) => (v == null || v === '' ? NaN : Number(v)))
-        .filter((v) => Number.isFinite(v));
+    const byTeamId: Record<number, number> = {};
+    for (const side of data?.response ?? []) {
+        const raw = side.statistics?.find((x) => x.type === 'Corner Kicks')?.value;
+        const n = raw == null || raw === '' ? NaN : Number(raw);
+        if (side.team?.id && Number.isFinite(n)) byTeamId[side.team.id] = n;
+    }
 
-    const total = counts.length === 2 ? counts[0] + counts[1] : null;
+    const ids = Object.keys(byTeamId);
+    const result: FixtureCorners | null =
+        ids.length === 2
+            ? { total: byTeamId[Number(ids[0])] + byTeamId[Number(ids[1])], byTeamId }
+            : null;
     // 30d, or a short retry window when the stats aren't up yet.
-    await store.set(key, total == null ? { none: true } : { total }, (total == null ? 6 : 30 * 24) * 60 * 60);
-    return total;
+    await store.set(key, result ?? { none: true }, (result == null ? 6 : 30 * 24) * 60 * 60);
+    return result;
 }

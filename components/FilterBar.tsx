@@ -1,5 +1,7 @@
 'use client';
 
+import type { ReactNode } from 'react';
+
 export type DateBucket = 'all' | 'today' | 'tomorrow' | '3d' | 'week';
 export type SortKey =
     | 'kickoff'
@@ -16,6 +18,8 @@ export interface Filters {
     date: DateBucket;
     sort: SortKey;
     expandAll: boolean;
+    /** Show only fixtures enriched with API-Football live form + provider signals. */
+    enrichedOnly: boolean;
 }
 
 /** Sorts that produce a meaningful 1..N ranking (probability-based). */
@@ -144,21 +148,56 @@ export function FilterBar({
 
             <fieldset className="min-w-0">
                 <legend className="mb-1.5 text-[11px] uppercase tracking-wide text-text-faint">
+                    Data
+                </legend>
+                <ToggleButton
+                    active={filters.enrichedOnly}
+                    onClick={() => onChange({ ...filters, enrichedOnly: !filters.enrichedOnly })}
+                    title="Show only fixtures with API-Football live form + provider signals blended in"
+                >
+                    Enriched only
+                </ToggleButton>
+            </fieldset>
+
+            <fieldset className="min-w-0">
+                <legend className="mb-1.5 text-[11px] uppercase tracking-wide text-text-faint">
                     Details
                 </legend>
-                <button
-                    type="button"
-                    aria-pressed={filters.expandAll}
+                <ToggleButton
+                    active={filters.expandAll}
                     onClick={() => onChange({ ...filters, expandAll: !filters.expandAll })}
-                    className={`rounded-md border px-2.5 py-1 text-sm transition-colors ${
-                        filters.expandAll
-                            ? 'border-accent/40 bg-accent/10 text-text'
-                            : 'border-border bg-surface text-text-dim hover:border-border-strong hover:text-text'
-                    }`}
                 >
                     {filters.expandAll ? 'Markets shown' : 'Show all markets'}
-                </button>
+                </ToggleButton>
             </fieldset>
         </div>
+    );
+}
+
+function ToggleButton({
+    active,
+    onClick,
+    title,
+    children,
+}: {
+    active: boolean;
+    onClick: () => void;
+    title?: string;
+    children: ReactNode;
+}) {
+    return (
+        <button
+            type="button"
+            aria-pressed={active}
+            onClick={onClick}
+            title={title}
+            className={`rounded-md border px-2.5 py-1 text-sm transition-colors ${
+                active
+                    ? 'border-accent/40 bg-accent/10 text-text'
+                    : 'border-border bg-surface text-text-dim hover:border-border-strong hover:text-text'
+            }`}
+        >
+            {children}
+        </button>
     );
 }
