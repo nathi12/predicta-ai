@@ -332,11 +332,25 @@ export interface SlipRecord {
     createdAt: string;
 }
 
+/** One graded leg of a slip: the pick, the teams, the final score, and whether it landed. */
+export interface SlipLegResult {
+    matchId: string;
+    /** Team names — self-contained so a slip stays readable after its SlipRecord expires. */
+    home?: string;
+    away?: string;
+    /** SlipMarket id (see lib/slip/types.ts). */
+    market?: string;
+    pick: string;
+    hit: boolean;
+    /** Final score, when the leg's match was resolved. */
+    score?: { home: number; away: number };
+}
+
 export interface GradedSlip {
     slipId: string;
     presetId: string;
     gradedAt: string;
-    legResults: Array<{ matchId: string; pick: string; hit: boolean }>;
+    legResults: SlipLegResult[];
     /** Every leg hit. */
     won: boolean;
     combinedBookOdds: number | null;

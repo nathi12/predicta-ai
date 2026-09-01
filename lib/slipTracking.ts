@@ -16,6 +16,7 @@ import type {
     GradedSlip,
     MatchWithPrediction,
     SlipLeg,
+    SlipLegResult,
     SlipMarketStat,
     SlipRecord,
     SlipRollingStats,
@@ -162,9 +163,17 @@ export async function gradeSlip(
         return null;
     }
 
-    const legResults = record.legs.map((l) => {
+    const legResults: SlipLegResult[] = record.legs.map((l) => {
         const f = finals.get(l.matchId);
-        return { matchId: l.matchId, pick: l.pick, hit: !!f && legHit(l.market, f.home, f.away) };
+        return {
+            matchId: l.matchId,
+            home: l.home,
+            away: l.away,
+            market: l.market,
+            pick: l.pick,
+            hit: !!f && legHit(l.market, f.home, f.away),
+            score: f ? { home: f.home, away: f.away } : undefined,
+        };
     });
     const won = legResults.every((r) => r.hit);
     const payoutMultiple = won ? (record.combinedBookOdds ?? record.combinedFairOdds) : 0;
@@ -230,7 +239,39 @@ export async function recentSlips(
     const out: Array<GradedSlip & { record: SlipRecord | null }> = [];
     for (const id of ids.slice(0, limit)) {
         const res = await store.get<GradedSlip>(resultKey(id));
-        if (res) out.push({ ...res, record: await store.get<SlipRecord>(slipKey(id)) });
+        if (!res) continue;
+        const record = await store.get<SlipRecord>(slipKey(id));
+        out.push({ ...res, legResults: await hydrateLegs(res.legResults, record), record });
     }
     return out;
+}
+
+/**
+ * Fill in any leg still missing team names or a final score. New slips store both
+ * at grade time; older ones fall back to their SlipRecord and, for the score, to
+ * the match's own graded prediction result (`result:{matchId}`).
+ */
+async function hydrateLegs(
+    legs: SlipLegResult[],
+    record: SlipRecord | null,
+): Promise<SlipLegResult[]> {
+    return Promise.all(
+        legs.map(async (leg, i) => {
+            if (leg.home && leg.score) return leg;
+            const recLeg = record?.legs[i];
+            const gr =
+                leg.score == null
+                    ? await store.get<{ finalScore?: { home: number; away: number } }>(
+                          `result:${leg.matchId}`,
+                      )
+                    : null;
+            return {
+                ...leg,
+                home: leg.home ?? recLeg?.home,
+                away: leg.away ?? recLeg?.away,
+                market: leg.market ?? recLeg?.market,
+                score: leg.score ?? gr?.finalScore,
+            };
+        }),
+    );
 }

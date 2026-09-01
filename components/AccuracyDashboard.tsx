@@ -244,24 +244,65 @@ function SlipRecord({
                             <h3 className="mb-2 text-sm font-semibold">Recent slips</h3>
                             <ul className="divide-y divide-border text-sm">
                                 {recent.map((r) => (
-                                    <li
-                                        key={r.slipId}
-                                        className="flex items-center justify-between gap-3 py-2"
-                                    >
-                                        <span className="truncate text-text-dim">
-                                            {SLIP_PRESET_LABEL[r.presetId] ?? r.presetId} ·{' '}
-                                            {r.legResults.length} legs
-                                        </span>
-                                        <span className="flex items-center gap-3 tabular">
-                                            {r.combinedBookOdds != null && (
-                                                <span className="text-text-faint">
-                                                    @ {r.combinedBookOdds.toFixed(2)}
-                                                </span>
-                                            )}
-                                            <span className={r.won ? 'text-pos' : 'text-neg'}>
-                                                {r.won ? 'landed' : 'lost'}
+                                    <li key={r.slipId} className="py-2.5">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <span className="truncate font-medium text-text-dim">
+                                                {SLIP_PRESET_LABEL[r.presetId] ?? r.presetId} ·{' '}
+                                                {r.legResults.length} legs
                                             </span>
-                                        </span>
+                                            <span className="flex shrink-0 items-center gap-3 tabular">
+                                                {r.combinedBookOdds != null && (
+                                                    <span className="text-text-faint">
+                                                        @ {r.combinedBookOdds.toFixed(2)}
+                                                    </span>
+                                                )}
+                                                <span
+                                                    className={r.won ? 'text-pos' : 'text-neg'}
+                                                >
+                                                    {r.won ? 'landed' : 'lost'}
+                                                </span>
+                                            </span>
+                                        </div>
+                                        <ul className="mt-1.5 space-y-1 border-l border-border pl-3">
+                                            {r.legResults.map((leg, i) => {
+                                                const recLeg = r.record?.legs[i];
+                                                const home = leg.home ?? recLeg?.home;
+                                                const away = leg.away ?? recLeg?.away;
+                                                return (
+                                                    <li
+                                                        key={`${leg.matchId}-${i}`}
+                                                        className="flex items-center justify-between gap-3 text-xs"
+                                                    >
+                                                        <span className="min-w-0 truncate text-text-faint">
+                                                            <span className="text-text-dim">
+                                                                {leg.pick}
+                                                            </span>
+                                                            {home && away && (
+                                                                <>
+                                                                    {' · '}
+                                                                    {home} v {away}
+                                                                </>
+                                                            )}
+                                                        </span>
+                                                        <span className="flex shrink-0 items-center gap-2 tabular">
+                                                            {leg.score && (
+                                                                <span className="text-text-faint">
+                                                                    {leg.score.home}–{leg.score.away}
+                                                                </span>
+                                                            )}
+                                                            <span
+                                                                className={
+                                                                    leg.hit ? 'text-pos' : 'text-neg'
+                                                                }
+                                                                title={leg.hit ? 'leg hit' : 'leg missed'}
+                                                            >
+                                                                {leg.hit ? 'hit' : 'miss'}
+                                                            </span>
+                                                        </span>
+                                                    </li>
+                                                );
+                                            })}
+                                        </ul>
                                     </li>
                                 ))}
                             </ul>
