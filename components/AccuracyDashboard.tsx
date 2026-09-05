@@ -94,7 +94,12 @@ function PredictionRecord({
             </section>
 
             <section>
-                <h2 className="mb-2 text-sm font-semibold">Calibration — favourite probability vs actual</h2>
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                    <h2 className="text-sm font-semibold">Calibration — favourite probability vs actual</h2>
+                    <span className="inline-flex items-center gap-1 rounded-full border border-border bg-surface-2 px-2 py-0.5 text-xs text-text-faint">
+                        Market: match outcome (1X2)
+                    </span>
+                </div>
                 <p className="mb-3 text-xs text-text-dim">
                     A well-calibrated model’s bars sit on the diagonal: when it says 60%, it’s right
                     about 60% of the time.
@@ -110,13 +115,13 @@ function PredictionRecord({
                         Same read for the corner totals: each dot is a bucket of over-probabilities
                         against how often the over actually landed.
                     </p>
-                    <div className="flex flex-wrap gap-6">
+                    <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
                         <figure>
-                            <figcaption className="mb-1 text-xs text-text-faint">Over 9.5</figcaption>
+                            <figcaption className="mb-1 text-xs text-text-faint">Over 9.5 corners</figcaption>
                             <CalibrationChart bins={stats.cornersCalibration.over95} />
                         </figure>
                         <figure>
-                            <figcaption className="mb-1 text-xs text-text-faint">Over 10.5</figcaption>
+                            <figcaption className="mb-1 text-xs text-text-faint">Over 10.5 corners</figcaption>
                             <CalibrationChart bins={stats.cornersCalibration.over105} />
                         </figure>
                     </div>
@@ -385,8 +390,8 @@ function CornersCalibrationStatus({ stats }: { stats: RollingStats }) {
 }
 
 function CalibrationChart({ bins }: { bins: RollingStats['calibration'] }) {
-    const width = 340;
-    const height = 224;
+    const width = 400;
+    const height = 260;
     const m = { top: 12, right: 16, bottom: 40, left: 44 };
     const x0 = m.left;
     const y0 = height - m.bottom;
@@ -402,7 +407,7 @@ function CalibrationChart({ bins }: { bins: RollingStats['calibration'] }) {
     return (
         <svg
             viewBox={`0 0 ${width} ${height}`}
-            className="max-w-sm"
+            className="h-auto w-full max-w-md"
             role="img"
             aria-label="Calibration chart: predicted probability against observed frequency"
         >
