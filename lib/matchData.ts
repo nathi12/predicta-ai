@@ -18,9 +18,8 @@ import {
 } from '@/services/footballData';
 import {
     budgetRemaining,
-    getFixturesByDate,
     getFixtureInsight,
-    normalizeTeam,
+    resolveFixture,
     type AFFixtureRef,
     type ApiFootballInsight,
 } from '@/services/apiFootball';
@@ -276,7 +275,7 @@ async function assemble(): Promise<MatchWithPrediction[]> {
         // team ids. Gated on a healthy budget; shares the cached fixture index.
         let afRef: AFFixtureRef | undefined;
         if (hasApiFootball() && afBudget >= 2 && hoursAhead > 0 && hoursAhead <= AF_ID_HOURS_AHEAD) {
-            afRef = await resolveApiFootballFixtureId(fx);
+            afRef = await resolveApiFootballFixtureId(fx, bundle.code);
         }
         const apiFootballFixtureId = afRef?.fixtureId;
 
@@ -295,10 +294,8 @@ async function assemble(): Promise<MatchWithPrediction[]> {
         let dataQuality: EnrichedMatch['dataQuality'] = 'core';
         let providerOutcome: EnrichedMatch['providerOutcome'];
 
-        if (afBudget >= 2 && hoursAhead > 0 && hoursAhead <= ENRICH_HOURS_AHEAD) {
-            const insight = apiFootballFixtureId
-                ? await getFixtureInsight(apiFootballFixtureId).catch(() => null)
-                : await enrich(bundle.code, fx);
+        if (apiFootballFixtureId && afBudget >= 2 && hoursAhead > 0 && hoursAhead <= ENRICH_HOURS_AHEAD) {
+            const insight = await getFixtureInsight(apiFootballFixtureId).catch(() => null);
             if (insight) {
                 afBudget -= 2;
                 dataQuality = 'enriched';
@@ -342,34 +339,25 @@ async function assemble(): Promise<MatchWithPrediction[]> {
 }
 
 /** Match a Football-Data fixture to its API-Football fixture + team ids. */
-async function resolveApiFootballFixtureId(fx: FDMatch): Promise<AFFixtureRef | undefined> {
+async function resolveApiFootballFixtureId(
+    fx: FDMatch,
+    code: LeagueCode,
+): Promise<AFFixtureRef | undefined> {
     try {
-        const day = fx.utcDate.slice(0, 10);
-        const index = await getFixturesByDate(day);
-        const h = normalizeTeam(fx.homeTeam.name);
-        const hs = normalizeTeam(fx.homeTeam.shortName || fx.homeTeam.name);
-        const a = normalizeTeam(fx.awayTeam.name);
-        const as = normalizeTeam(fx.awayTeam.shortName || fx.awayTeam.name);
-        return (
-            index[`${h}|${a}|${day}`] ??
-            index[`${hs}|${as}|${day}`] ??
-            index[`${h}|${as}|${day}`] ??
-            index[`${hs}|${a}|${day}`]
-        );
+        const ref = await resolveFixture({
+            kickoff: fx.utcDate,
+            leagueId: LEAGUES[code].apiFootballId,
+            homeNames: [fx.homeTeam.name, fx.homeTeam.shortName].filter(
+                (s): s is string => !!s,
+            ),
+            awayNames: [fx.awayTeam.name, fx.awayTeam.shortName].filter(
+                (s): s is string => !!s,
+            ),
+        });
+        return ref ?? undefined;
     } catch (err) {
         log.warn('api-football fixture id lookup failed', (err as Error).message);
         return undefined;
-    }
-}
-
-async function enrich(code: LeagueCode, fx: FDMatch): Promise<ApiFootballInsight | null> {
-    const ref = await resolveApiFootballFixtureId(fx);
-    if (!ref) return null;
-    try {
-        return await getFixtureInsight(ref.fixtureId);
-    } catch (err) {
-        log.warn(`enrich ${code} failed`, (err as Error).message);
-        return null;
     }
 }
 

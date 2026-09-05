@@ -17,7 +17,16 @@ import {
 } from '@/lib/env';
 import { cached, store } from '@/lib/kv';
 import { log } from '@/lib/log';
+import {
+    matchFixture,
+    normalizeTeam,
+    type AFDayFixture,
+    type AFFixtureRef,
+    type FixtureQuery,
+} from '@/lib/afMatch';
 import type { FixtureOdds, HeadToHead } from '@/types';
+
+export type { AFFixtureRef } from '@/lib/afMatch';
 
 // Direct API-Sports access (current season on the free tier) is preferred;
 // RapidAPI is the fallback (free plan = seasons 2021-2023 only).
@@ -98,18 +107,6 @@ async function afGet<T>(pathname: string): Promise<T | null> {
     }
 }
 
-// --- name matching ---------------------------------------------------
-
-export function normalizeTeam(name: string): string {
-    return name
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/\p{Diacritic}/gu, '')
-        .replace(/\b(fc|cf|afc|sc|ac|as|ssc|rc|cd|ud|club|calcio|1899|1846|1904|1907|09)\b/g, '')
-        .replace(/[^a-z0-9]/g, '')
-        .trim();
-}
-
 // --- fixtures -------------------------------------------------------
 
 interface AFFixture {
@@ -118,43 +115,63 @@ interface AFFixture {
     teams: { home: { id: number; name: string }; away: { id: number; name: string } };
 }
 
-/** A resolved API-Football fixture: its id plus both team ids. */
-export interface AFFixtureRef {
-    fixtureId: number;
-    homeId: number;
-    awayId: number;
-}
-
 /** API-Football league ids for the competitions we cover — keeps the index small. */
 const COVERED_AF_LEAGUE_IDS = new Set([39, 140, 135, 78, 61, 88]);
 
+// A populated day is stable, so cache it hard. A *failed* fetch is cached only
+// briefly so a transient 429/403 can't blank out enrichment for hours; a real
+// but empty answer sits in between so a schedule that fills in later is picked
+// up well within the enrichment window.
+const FIXTURES_TTL_OK = 6 * 60 * 60;
+const FIXTURES_TTL_EMPTY = 2 * 60 * 60;
+const FIXTURES_TTL_ERROR = 20 * 60;
+
 /**
- * Map of `${normHome}|${normAway}|${yyyy-mm-dd}` -> API-Football fixture id for
- * one calendar day, restricted to the leagues we cover.
+ * Every API-Football fixture for one calendar day in the leagues we cover, team
+ * names pre-normalised for matching. Empty array = the day genuinely has no
+ * covered fixture *or* the fetch failed (the two are distinguished only by the
+ * cache TTL, above).
  *
  * Uses `/fixtures?date=` with no `season` param: the free plan rejects
  * `league`+`season` fixture queries for the current season ("Free plans do not
  * have access to this season"), but the by-date endpoint works.
  */
-export async function getFixturesByDate(date: string): Promise<Record<string, AFFixtureRef>> {
-    const key = `af:fixtures:date:v2:${date}`;
-    const hit = await store.get<Record<string, AFFixtureRef>>(key);
+export async function getFixturesByDate(date: string): Promise<AFDayFixture[]> {
+    const key = `af:fixtures:date:v3:${date}`;
+    const hit = await store.get<AFDayFixture[]>(key);
     if (hit) return hit;
 
     const data = await afGet<{ response: AFFixture[] }>(`/fixtures?date=${date}`);
-    const index: Record<string, AFFixtureRef> = {};
-    for (const f of data?.response ?? []) {
-        if (f.league?.id && !COVERED_AF_LEAGUE_IDS.has(f.league.id)) continue;
-        const day = f.fixture.date.slice(0, 10);
-        const k = `${normalizeTeam(f.teams.home.name)}|${normalizeTeam(f.teams.away.name)}|${day}`;
-        index[k] = {
-            fixtureId: f.fixture.id,
-            homeId: f.teams.home.id,
-            awayId: f.teams.away.id,
-        };
+    const fixtures: AFDayFixture[] = [];
+    if (Array.isArray(data?.response)) {
+        for (const f of data.response) {
+            const leagueId = f.league?.id ?? null;
+            if (leagueId != null && !COVERED_AF_LEAGUE_IDS.has(leagueId)) continue;
+            fixtures.push({
+                fixtureId: f.fixture.id,
+                homeId: f.teams.home.id,
+                awayId: f.teams.away.id,
+                leagueId,
+                kickoff: f.fixture.date,
+                homeNorm: normalizeTeam(f.teams.home.name),
+                awayNorm: normalizeTeam(f.teams.away.name),
+            });
+        }
     }
-    await store.set(key, index, 6 * 60 * 60);
-    return index;
+
+    const ttl =
+        data == null ? FIXTURES_TTL_ERROR : fixtures.length > 0 ? FIXTURES_TTL_OK : FIXTURES_TTL_EMPTY;
+    await store.set(key, fixtures, ttl);
+    return fixtures;
+}
+
+/**
+ * Resolve a Football-Data fixture to its API-Football fixture + team ids, or
+ * null when the day's list can't be fetched or nothing matches confidently.
+ */
+export async function resolveFixture(q: FixtureQuery): Promise<AFFixtureRef | null> {
+    const fixtures = await getFixturesByDate(q.kickoff.slice(0, 10));
+    return fixtures.length > 0 ? matchFixture(q, fixtures) : null;
 }
 
 /**

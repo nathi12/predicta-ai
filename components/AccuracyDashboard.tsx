@@ -104,7 +104,7 @@ function PredictionRecord({
                     A well-calibrated model’s bars sit on the diagonal: when it says 60%, it’s right
                     about 60% of the time.
                 </p>
-                <CalibrationChart bins={stats.calibration} />
+                <CalibrationChart bins={stats.calibration} market="Match outcome (1X2)" />
                 <CalibrationStatus stats={stats} />
             </section>
 
@@ -118,11 +118,11 @@ function PredictionRecord({
                     <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
                         <figure>
                             <figcaption className="mb-1 text-xs text-text-faint">Over 9.5 corners</figcaption>
-                            <CalibrationChart bins={stats.cornersCalibration.over95} />
+                            <CalibrationChart bins={stats.cornersCalibration.over95} market="Over 9.5 corners" />
                         </figure>
                         <figure>
                             <figcaption className="mb-1 text-xs text-text-faint">Over 10.5 corners</figcaption>
-                            <CalibrationChart bins={stats.cornersCalibration.over105} />
+                            <CalibrationChart bins={stats.cornersCalibration.over105} market="Over 10.5 corners" />
                         </figure>
                     </div>
                     <CornersCalibrationStatus stats={stats} />
@@ -389,10 +389,10 @@ function CornersCalibrationStatus({ stats }: { stats: RollingStats }) {
     );
 }
 
-function CalibrationChart({ bins }: { bins: RollingStats['calibration'] }) {
+function CalibrationChart({ bins, market }: { bins: RollingStats['calibration']; market?: string }) {
     const width = 400;
     const height = 260;
-    const m = { top: 12, right: 16, bottom: 40, left: 44 };
+    const m = { top: market ? 28 : 12, right: 16, bottom: 40, left: 44 };
     const x0 = m.left;
     const y0 = height - m.bottom;
     const x1 = width - m.right;
@@ -409,8 +409,20 @@ function CalibrationChart({ bins }: { bins: RollingStats['calibration'] }) {
             viewBox={`0 0 ${width} ${height}`}
             className="h-auto w-full max-w-md"
             role="img"
-            aria-label="Calibration chart: predicted probability against observed frequency"
+            aria-label={`Calibration chart${market ? ` for ${market}` : ''}: predicted probability against observed frequency`}
         >
+            {market && (
+                <text
+                    x={x0}
+                    y={16}
+                    textAnchor="start"
+                    fill="var(--color-text-dim)"
+                    fontSize={12}
+                    fontWeight={600}
+                >
+                    {market}
+                </text>
+            )}
             <line
                 x1={x0}
                 y1={y0}
