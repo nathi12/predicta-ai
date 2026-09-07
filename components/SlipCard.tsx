@@ -16,29 +16,33 @@ function Tile({ label, value, sub, tone }: { label: string; value: string; sub?:
 }
 
 function OddsCell({ leg }: { leg: Selection }) {
+    const live = leg.bookOdds != null;
+    return (
+        <span className={`tabular ${live ? '' : 'text-text-dim'}`}>
+            {formatOdds(live ? leg.bookOdds : leg.fairOdds)}
+        </span>
+    );
+}
+
+/** Live-vs-fair pill: green when the leg is priced against real odds, faint otherwise. */
+function PriceBadge({ leg }: { leg: Selection }) {
     if (leg.bookOdds != null) {
-        const src = leg.oddsSource === 'book' ? (leg.bookmaker ?? 'book') : 'consensus';
+        const src = leg.oddsSource === 'book' ? (leg.bookmaker ?? 'a bookmaker') : 'consensus';
         return (
-            <span className="tabular">
-                {formatOdds(leg.bookOdds)}
-                <span
-                    className="ml-1 text-[10px] uppercase tracking-wide text-accent"
-                    title="Priced against live bookmaker odds"
-                >
-                    {src}
-                </span>
+            <span
+                className="shrink-0 rounded border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-accent"
+                title={`Priced against live odds (${src})`}
+            >
+                Live
             </span>
         );
     }
     return (
-        <span className="tabular text-text-dim">
-            {formatOdds(leg.fairOdds)}
-            <span
-                className="ml-1 text-[10px] uppercase tracking-wide text-text-faint"
-                title="No live odds for this fixture — fair odds (1 ÷ model probability)"
-            >
-                fair
-            </span>
+        <span
+            className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-text-faint"
+            title="No live odds for this fixture — fair odds shown (1 ÷ model probability)"
+        >
+            Fair
         </span>
     );
 }
@@ -152,7 +156,12 @@ export function SlipCard({ slip, heading = 'Curated slip' }: { slip: BetSlip; he
                                     <KickoffTime iso={leg.kickoff} />
                                 </div>
                                 <div className="mt-1 flex items-center justify-between gap-3">
-                                    <span className="truncate text-sm font-medium">{leg.pick}</span>
+                                    <span className="flex min-w-0 items-center gap-2">
+                                        <span className="truncate text-sm font-medium">
+                                            {leg.pick}
+                                        </span>
+                                        <PriceBadge leg={leg} />
+                                    </span>
                                     <span className="flex shrink-0 items-center gap-2.5 text-sm">
                                         <span className="tabular text-text-dim">
                                             {formatPct(leg.modelProbability)}
