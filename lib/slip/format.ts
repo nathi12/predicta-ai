@@ -51,15 +51,23 @@ export function slipToText(slip: BetSlip, heading = 'PredictaAI slip'): string {
     const lines: string[] = [heading];
     slip.legs.forEach((leg, i) => {
         const odds = formatOdds(leg.bookOdds ?? leg.fairOdds);
+        const priceTag =
+            leg.bookOdds != null
+                ? ` (${leg.oddsSource === 'book' ? (leg.bookmaker ?? 'book') : 'consensus'})`
+                : ' (fair odds)';
         const kickoff = new Date(leg.kickoff).toISOString().slice(0, 16).replace('T', ' ');
         lines.push(
-            `${i + 1}. ${leg.homeTeam} v ${leg.awayTeam} (${leg.leagueName}, ${kickoff} UTC) — ${leg.pick} @ ${odds}`,
+            `${i + 1}. ${leg.homeTeam} v ${leg.awayTeam} (${leg.leagueName}, ${kickoff} UTC) — ${leg.pick} @ ${odds}${priceTag}`,
         );
     });
     const combined = formatOdds(slip.combinedBookOdds ?? slip.combinedFairOdds);
+    const liveLegs = slip.legs.filter((l) => l.bookOdds != null).length;
     lines.push(
         `Combined ${combined} · model ${formatPct(slip.combinedModelProbability)}` +
-            (slip.combinedEdge != null ? ` · edge ${formatSignedPct(slip.combinedEdge)}` : ''),
+            (slip.combinedEdge != null ? ` · edge ${formatSignedPct(slip.combinedEdge)}` : '') +
+            (liveLegs === slip.legs.length
+                ? ''
+                : ` · ${liveLegs}/${slip.legs.length} legs priced live`),
     );
     lines.push('Not betting advice — probabilities only. begambleaware.org');
     return lines.join('\n');

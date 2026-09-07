@@ -21,14 +21,24 @@ function OddsCell({ leg }: { leg: Selection }) {
         return (
             <span className="tabular">
                 {formatOdds(leg.bookOdds)}
-                <span className="ml-1 text-[10px] uppercase tracking-wide text-text-faint">{src}</span>
+                <span
+                    className="ml-1 text-[10px] uppercase tracking-wide text-accent"
+                    title="Priced against live bookmaker odds"
+                >
+                    {src}
+                </span>
             </span>
         );
     }
     return (
         <span className="tabular text-text-dim">
             {formatOdds(leg.fairOdds)}
-            <span className="ml-1 text-[10px] uppercase tracking-wide text-text-faint">fair</span>
+            <span
+                className="ml-1 text-[10px] uppercase tracking-wide text-text-faint"
+                title="No live odds for this fixture — fair odds (1 ÷ model probability)"
+            >
+                fair
+            </span>
         </span>
     );
 }
@@ -49,6 +59,7 @@ export function SlipCard({ slip, heading = 'Curated slip' }: { slip: BetSlip; he
 
     const enoughLegs = slip.legs.length >= 2;
     const payoutOdds = slip.combinedBookOdds ?? slip.combinedFairOdds;
+    const liveLegs = slip.legs.filter((l) => l.bookOdds != null).length;
 
     const copy = async () => {
         try {
@@ -87,8 +98,10 @@ export function SlipCard({ slip, heading = 'Curated slip' }: { slip: BetSlip; he
                             value={formatOdds(payoutOdds)}
                             sub={
                                 slip.combinedBookOdds != null
-                                    ? `${slip.legs.length} legs`
-                                    : 'no live prices'
+                                    ? `${slip.legs.length} legs · all priced live`
+                                    : liveLegs > 0
+                                      ? `${liveLegs} of ${slip.legs.length} legs priced live`
+                                      : 'no live prices'
                             }
                         />
                         <Tile

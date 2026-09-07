@@ -53,17 +53,55 @@ export function SlipBuilder({
             ? `Target ~${req.targetOdds.toFixed(2)} · ${req.risk}`
             : `${MARKET_LABEL[req.market]} · ${req.legs} legs`;
 
-    const oddsCoverage = Object.keys(odds).length;
+    const liveOdds = useMemo(
+        () =>
+            matches
+                .filter((m) => odds[m.match.id] != null)
+                .map((m) => {
+                    const o = odds[m.match.id];
+                    return {
+                        id: m.match.id,
+                        fixture: `${m.match.home.team.shortName} v ${m.match.away.team.shortName}`,
+                        leagueName: m.match.leagueName,
+                        kickoff: m.match.kickoff,
+                        priceSource: o.source === 'book' ? (o.bookmaker ?? 'book') : 'consensus',
+                    };
+                })
+                .sort((a, b) => a.kickoff.localeCompare(b.kickoff)),
+        [matches, odds],
+    );
 
     return (
         <div className="space-y-4">
             <SlipControls req={req} leagues={leagues} onChange={setReq} />
 
-            <p className="text-xs text-text-faint" aria-live="polite">
-                {matches.length} fixtures loaded · live odds for {oddsCoverage}
-                {oddsCoverage === 0 &&
-                    ' — set a direct API_FOOTBALL_KEY for real prices; fair odds shown meanwhile'}
-            </p>
+            {liveOdds.length === 0 ? (
+                <p className="text-xs text-text-faint" aria-live="polite">
+                    {matches.length} fixtures loaded · no live odds — set a direct API_FOOTBALL_KEY
+                    for real prices; fair odds shown meanwhile
+                </p>
+            ) : (
+                <details className="text-xs text-text-faint">
+                    <summary className="cursor-pointer list-none hover:text-text-dim">
+                        {matches.length} fixtures loaded ·{' '}
+                        <span className="underline decoration-dotted underline-offset-2">
+                            live odds for {liveOdds.length}
+                        </span>
+                    </summary>
+                    <ul className="mt-2 space-y-1">
+                        {liveOdds.map((f) => (
+                            <li key={f.id} className="flex items-baseline justify-between gap-3">
+                                <span className="truncate text-text-dim">
+                                    {f.fixture} · {f.leagueName}
+                                </span>
+                                <span className="shrink-0 uppercase tracking-wide text-accent">
+                                    {f.priceSource}
+                                </span>
+                            </li>
+                        ))}
+                    </ul>
+                </details>
+            )}
 
             <SlipCard slip={slip} heading={heading} />
 
