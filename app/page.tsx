@@ -1,7 +1,8 @@
 import { Suspense } from 'react';
 import { getUpcomingMatches } from '@/lib/matchData';
+import { toFixtureSummary } from '@/lib/fixtures/summary';
 import { MatchExplorer } from '@/components/MatchExplorer';
-import { MatchGridSkeleton } from '@/components/skeletons';
+import { FixtureListSkeleton } from '@/components/skeletons';
 import { Disclaimer } from '@/components/Disclaimer';
 
 // Served from cache; ISR revalidates in the background every 15 minutes.
@@ -20,7 +21,8 @@ async function MatchList() {
         );
     }
 
-    return <MatchExplorer matches={matches} />;
+    // Only the list fields cross to the client; the match page renders the rest.
+    return <MatchExplorer fixtures={matches.map(toFixtureSummary)} />;
 }
 
 export default function HomePage() {
@@ -29,8 +31,9 @@ export default function HomePage() {
             <header className="space-y-1">
                 <h1 className="text-xl font-semibold tracking-tight">Upcoming fixtures</h1>
                 <p className="max-w-2xl text-sm text-text-dim">
-                    Match-odds, goals and both-teams-to-score probabilities from a Dixon-Coles goal
-                    model blended with Elo ratings. Every prediction is logged and graded — see the{' '}
+                    Win, goals and both-teams-to-score probabilities from a Dixon-Coles goal model
+                    blended with Elo ratings. Open a match for the full breakdown. Every prediction is
+                    logged and graded — see the{' '}
                     <a href="/accuracy" className="text-accent underline-offset-2 hover:underline">
                         accuracy record
                     </a>
@@ -38,7 +41,7 @@ export default function HomePage() {
                 </p>
             </header>
 
-            <Suspense fallback={<MatchGridSkeleton />}>
+            <Suspense fallback={<FixtureListSkeleton />}>
                 <MatchList />
             </Suspense>
 

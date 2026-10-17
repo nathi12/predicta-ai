@@ -12,6 +12,8 @@ export interface LeagueConfig {
     season: number;
     name: string;
     shortName: string;
+    /** 2-3 letter tag for dense rows, e.g. 'PL'. */
+    abbr: string;
     country: string;
     /** League-average total goals per match (used as a prior for shrinkage). */
     baseGoals: number;

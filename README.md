@@ -145,9 +145,11 @@ head-to-head and API-Football enrichment, which have no history.
 ## Project layout
 
 ```
-app/            routes: / (ISR), /accuracy, /method, /api/cron/grade
-components/     UI (server + client); MatchExplorer does client-side filter/sort only
+app/            routes: / (ISR), /match/[id] (on-demand ISR), /slip, /accuracy, /method, /api/cron/grade
+components/     UI (server + client); MatchExplorer does client-side filter/sort only;
+  match/        sections of the match analysis page
 lib/
+  fixtures/     list DTO + view logic (bands, day grouping, filters) — pure
   prediction/   the model — poisson, strength, elo, ensemble, corners, calibrate, params
   backtest/     season replay + scoring + parameter search (pure)
   matchData.ts  assembles fixtures + strength + predictions (KV-cached, per league)

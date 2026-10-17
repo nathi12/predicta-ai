@@ -3,6 +3,7 @@
 // One KV-cached entry point: getUpcomingMatches().
 
 import 'server-only';
+import { cache } from 'react';
 import { store, tryLock } from '@/lib/kv';
 import { keepAlive, singleFlight } from '@/lib/flight';
 import { hasApiFootball } from '@/lib/env';
@@ -447,6 +448,16 @@ export async function getUpcomingMatches(): Promise<MatchWithPrediction[]> {
     }
     return (await rebuild) ?? (await waitForBuild());
 }
+
+/**
+ * One upcoming fixture from the same slate as the list (null once it has left
+ * the window, e.g. kicked off). Memoised per request so a page and its
+ * metadata share one read.
+ */
+export const getMatchById = cache(async (id: string): Promise<MatchWithPrediction | null> => {
+    const matches = await getUpcomingMatches();
+    return matches.find((m) => m.match.id === id) ?? null;
+});
 
 /**
  * Rebuild the slate unless another instance already is. Resolves to the new

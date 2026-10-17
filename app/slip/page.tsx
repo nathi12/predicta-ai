@@ -3,7 +3,7 @@ import type { Metadata } from 'next';
 import { getUpcomingMatches } from '@/lib/matchData';
 import { getUpcomingOdds } from '@/lib/oddsData';
 import { SlipBuilder } from '@/components/SlipBuilder';
-import { MatchGridSkeleton } from '@/components/skeletons';
+import { SlipSkeleton } from '@/components/skeletons';
 import { Disclaimer } from '@/components/Disclaimer';
 
 export const metadata: Metadata = {
@@ -48,7 +48,7 @@ export default function SlipPage() {
                 </p>
             </header>
 
-            <Suspense fallback={<MatchGridSkeleton />}>
+            <Suspense fallback={<SlipSkeleton />}>
                 <Builder />
             </Suspense>
 

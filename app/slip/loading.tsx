@@ -1,4 +1,4 @@
-import { MatchGridSkeleton } from '@/components/skeletons';
+import { SlipSkeleton } from '@/components/skeletons';
 
 export default function Loading() {
     return (
@@ -7,7 +7,7 @@ export default function Loading() {
                 <span className="skeleton block h-6 w-48" />
                 <span className="skeleton block h-4 w-full max-w-2xl" />
             </div>
-            <MatchGridSkeleton />
+            <SlipSkeleton />
         </div>
     );
 }
