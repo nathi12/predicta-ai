@@ -348,6 +348,11 @@ const ODDS_MAP: Array<{ key: OddsMarketKey; bet: (b: AFOddsBet) => boolean; valu
     { key: 'over15', bet: (b) => b.id === 5, value: 'over 1.5' },
     { key: 'over25', bet: (b) => b.id === 5, value: 'over 2.5' },
     { key: 'over35', bet: (b) => b.id === 5, value: 'over 3.5' },
+    // Unders aren't slip legs; they let the market's margin be removed when
+    // its implied probabilities are logged for the model-vs-market record.
+    { key: 'under15', bet: (b) => b.id === 5, value: 'under 1.5' },
+    { key: 'under25', bet: (b) => b.id === 5, value: 'under 2.5' },
+    { key: 'under35', bet: (b) => b.id === 5, value: 'under 3.5' },
     { key: 'btts', bet: (b) => b.id === 8, value: 'yes' },
     { key: 'bttsNo', bet: (b) => b.id === 8, value: 'no' },
     { key: 'dc1x', bet: (b) => b.id === 12, value: 'home/draw' },

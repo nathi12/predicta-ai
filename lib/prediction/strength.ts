@@ -4,6 +4,8 @@
 // toward the league average so a 2-game ssample doesn't dominate.
 
 import type { LeagueConfig, RecordSplit, TeamStrength } from '@/types';
+import { clamp } from '@/lib/num';
+import { DEFAULT_PARAMS, type ModelParams } from './params';
 
 export interface LeagueAverages {
     /** Mean goals scored by the home side across the division. */
@@ -14,15 +16,25 @@ export interface LeagueAverages {
     awayAgainst: number;
 }
 
-const SHRINK_K = 5;
-
 const perGame = (r: RecordSplit, field: 'goalsFor' | 'goalsAgainst'): number =>
     r.played > 0 ? r[field] / r.played : NaN;
 
-/** Blend an observed rate with a prior; weight of the prior = SHRINK_K games. */
-function shrink(rate: number, prior: number, games: number): number {
+/** Stand-in venue record when a side has none yet: half its overall record. */
+export function halfOf(r: RecordSplit): RecordSplit {
+    return {
+        played: Math.round(r.played / 2),
+        won: Math.round(r.won / 2),
+        draw: Math.round(r.draw / 2),
+        lost: Math.round(r.lost / 2),
+        goalsFor: r.goalsFor / 2,
+        goalsAgainst: r.goalsAgainst / 2,
+    };
+}
+
+/** Blend an observed rate with a prior worth `priorGames` games. */
+function shrink(rate: number, prior: number, games: number, priorGames: number): number {
     if (!Number.isFinite(rate)) return prior;
-    return (rate * games + prior * SHRINK_K) / (games + SHRINK_K);
+    return (rate * games + prior * priorGames) / (games + priorGames);
 }
 
 export function computeLeagueAverages(
@@ -44,13 +56,19 @@ export function computeLeagueAverages(
         return { homeFor, homeAgainst: awayFor, awayFor, awayAgainst: homeFor };
     }
 
+    // Team ratings divide by these, so never let one reach zero (real leagues sit
+    // far above the floor; it only guards degenerate input against 0/0 = NaN).
+    const rate = (goals: number, games: number) => Math.max(MIN_LEAGUE_RATE, goals / games);
     return {
-        homeFor: sum(homeTable, 'goalsFor') / hp,
-        homeAgainst: sum(homeTable, 'goalsAgainst') / hp,
-        awayFor: sum(awayTable, 'goalsFor') / ap,
-        awayAgainst: sum(awayTable, 'goalsAgainst') / ap,
+        homeFor: rate(sum(homeTable, 'goalsFor'), hp),
+        homeAgainst: rate(sum(homeTable, 'goalsAgainst'), hp),
+        awayFor: rate(sum(awayTable, 'goalsFor'), ap),
+        awayAgainst: rate(sum(awayTable, 'goalsAgainst'), ap),
     };
 }
+
+/** Floor on a league's per-game scoring rates (goals per side per match). */
+const MIN_LEAGUE_RATE = 0.2;
 
 export interface TeamRatings {
     attack: number; // >1 = scores more than an average side at this venue
@@ -61,11 +79,12 @@ function ratings(
     split: RecordSplit,
     forAvg: number,
     againstAvg: number,
+    shrinkGames: number,
     enrichedFor?: number,
     enrichedAgainst?: number,
 ): TeamRatings {
-    const gf = shrink(perGame(split, 'goalsFor'), forAvg, split.played);
-    const ga = shrink(perGame(split, 'goalsAgainst'), againstAvg, split.played);
+    const gf = shrink(perGame(split, 'goalsFor'), forAvg, split.played, shrinkGames);
+    const ga = shrink(perGame(split, 'goalsAgainst'), againstAvg, split.played, shrinkGames);
 
     let attack = gf / forAvg;
     let defense = ga / againstAvg;
@@ -84,10 +103,6 @@ function ratings(
     };
 }
 
-function clamp(x: number, lo: number, hi: number): number {
-    return Math.max(lo, Math.min(hi, x));
-}
-
 /** Points from the last five results (W=3, D=1). */
 export function formPoints(form: Array<'W' | 'D' | 'L'>): number {
     return form.slice(0, 5).reduce((s, r) => s + (r === 'W' ? 3 : r === 'D' ? 1 : 0), 0);
@@ -95,16 +110,20 @@ export function formPoints(form: Array<'W' | 'D' | 'L'>): number {
 
 /**
  * Recency multiplier: teams markedly over/under their season baseline over the
- * last five games get a gentle nudge (max ±8%).
+ * last five games get a gentle nudge (at most ±formCap).
  */
-function formMultiplier(form: Array<'W' | 'D' | 'L'>, enrichedFormPoints?: number): number {
+function formMultiplier(
+    form: Array<'W' | 'D' | 'L'>,
+    params: Pick<ModelParams, 'formSlope' | 'formCap'>,
+    enrichedFormPoints?: number,
+): number {
     const pts = Number.isFinite(enrichedFormPoints as number)
         ? (enrichedFormPoints as number)
         : formPoints(form);
     const games = Math.min(5, form.length) || 5;
     const ppg = pts / games;
-    // League-average ppg is ~1.35; scale the gap into ±0.08.
-    return clamp(1 + (ppg - 1.35) * 0.06, 0.92, 1.08);
+    // League-average ppg is ~1.35.
+    return clamp(1 + (ppg - 1.35) * params.formSlope, 1 - params.formCap, 1 + params.formCap);
 }
 
 export interface BaseLambdas {
@@ -119,11 +138,13 @@ export function baseExpectedGoals(
     away: TeamStrength,
     league: LeagueConfig,
     avg: LeagueAverages,
+    params: ModelParams = DEFAULT_PARAMS,
 ): BaseLambdas {
     const homeR = ratings(
         home.home,
         avg.homeFor,
         avg.homeAgainst,
+        params.shrinkGames,
         home.enriched?.recentGoalsFor,
         home.enriched?.recentGoalsAgainst,
     );
@@ -131,12 +152,13 @@ export function baseExpectedGoals(
         away.away,
         avg.awayFor,
         avg.awayAgainst,
+        params.shrinkGames,
         away.enriched?.recentGoalsFor,
         away.enriched?.recentGoalsAgainst,
     );
 
-    const homeFormMult = formMultiplier(home.form, home.enriched?.formPoints);
-    const awayFormMult = formMultiplier(away.form, away.enriched?.formPoints);
+    const homeFormMult = formMultiplier(home.form, params, home.enriched?.formPoints);
+    const awayFormMult = formMultiplier(away.form, params, away.enriched?.formPoints);
 
     const lambdaHome = homeR.attack * awayR.defense * avg.homeFor * homeFormMult;
     const lambdaAway = awayR.attack * homeR.defense * avg.awayFor * awayFormMult;

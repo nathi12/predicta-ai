@@ -3,6 +3,8 @@
 // Everything downstream (1X2, O/U, BTTS, correct score) is read off one
 // score matrix so the numbers can never contradict each other.
 
+import { DEFAULT_PARAMS } from './params';
+
 const MAX_GOALS = 10;
 
 export function poissonPmf(lambda: number, k: number): number {
@@ -33,7 +35,11 @@ export interface ScoreMatrix {
     lambdaAway: number;
 }
 
-export function buildScoreMatrix(lambdaHome: number, lambdaAway: number, rho = -0.06): ScoreMatrix {
+export function buildScoreMatrix(
+    lambdaHome: number,
+    lambdaAway: number,
+    rho = DEFAULT_PARAMS.rho,
+): ScoreMatrix {
     const home: number[] = [];
     const away: number[] = [];
     for (let k = 0; k <= MAX_GOALS; k++) {
@@ -46,7 +52,9 @@ export function buildScoreMatrix(lambdaHome: number, lambdaAway: number, rho = -
     for (let i = 0; i <= MAX_GOALS; i++) {
         matrix[i] = [];
         for (let j = 0; j <= MAX_GOALS; j++) {
-            const p = home[i] * away[j] * tau(i, j, lambdaHome, lambdaAway, rho);
+            // tau can only go negative outside the valid Dixon-Coles range
+            // (ρ < −1/λ); never let that become a negative probability.
+            const p = home[i] * away[j] * Math.max(0, tau(i, j, lambdaHome, lambdaAway, rho));
             matrix[i][j] = p;
             total += p;
         }

@@ -1,9 +1,7 @@
 import { Suspense } from 'react';
-import { after } from 'next/server';
 import type { Metadata } from 'next';
 import { getUpcomingMatches } from '@/lib/matchData';
 import { getUpcomingOdds } from '@/lib/oddsData';
-import { recordPresetSlips } from '@/lib/slipTracking';
 import { SlipBuilder } from '@/components/SlipBuilder';
 import { MatchGridSkeleton } from '@/components/skeletons';
 import { Disclaimer } from '@/components/Disclaimer';
@@ -21,9 +19,6 @@ export const maxDuration = 60;
 
 async function Builder() {
     const [matches, odds] = await Promise.all([getUpcomingMatches(), getUpcomingOdds()]);
-
-    // After the response: log the canonical preset slips for the public record.
-    after(() => recordPresetSlips(matches, odds).catch(() => {}));
 
     if (matches.length === 0) {
         return (
@@ -45,7 +40,7 @@ export default function SlipPage() {
                     Pick a target combined odds figure, or build the whole slip from one market. The
                     model ranks every selection; the curator assembles the safest set that fits, one
                     leg per match, priced against real bookmaker odds where available. The curated
-                    preset slips are logged and graded on the{' '}
+                    preset slips are logged once a day at live prices and graded on the{' '}
                     <a href="/accuracy" className="text-accent underline-offset-2 hover:underline">
                         accuracy record
                     </a>

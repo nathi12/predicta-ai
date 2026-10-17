@@ -16,8 +16,9 @@ export default function MethodPage() {
                 <h2 className="text-base font-semibold text-text">Goal model</h2>
                 <p>
                     Each team gets venue-specific attack and defence ratings from the home and away
-                    league tables, normalised to the division average. Early-season rates are shrunk
-                    towards the league mean so a two-game sample doesn’t dominate. Those ratings give
+                    league tables, normalised to the division average. Those rates are shrunk firmly
+                    towards the league mean — the backtest showed a club’s home-only or away-only
+                    scoring record is a noisy guide, even late in a season. Those ratings give
                     an expected-goals figure for each side, which feeds a{' '}
                     <strong className="text-text">Dixon-Coles bivariate Poisson</strong> — a Poisson
                     model with a correction that lifts the low-scoring draw scorelines football
@@ -55,14 +56,24 @@ export default function MethodPage() {
                     Confidence is a real quantity — the sharpness of the outcome distribution scaled
                     by how much data backs it — not a marketing number. Predictions are logged and
                     graded against results. Once enough have been graded, a recalibration curve —
-                    how often a forecast of a given probability actually lands — is relearned from
-                    that log on every rebuild and folded back into the 1X2 output, so the numbers
-                    track their own track record. It lives on the{' '}
+                    how often the model’s raw forecast of a given probability actually lands — is
+                    relearned from that log on every rebuild and folded back into the 1X2 output, so
+                    the numbers track their own track record. It lives on the{' '}
                     <a className="text-accent underline-offset-2 hover:underline" href="/accuracy">
                         accuracy page
                     </a>
                     . A realistic ceiling for match-outcome accuracy is about 53–56%; anyone claiming
                     much more is not measuring honestly.
+                </p>
+                <p>
+                    The model’s constants — how hard team ratings are shrunk, the low-score
+                    correction, the Elo settings, the blend weights — aren’t picked by hand. A
+                    backtest replays whole past seasons through the live code, rebuilding only what
+                    was known before each kickoff, and fits them on one season before checking them
+                    on another it never saw. The record also scores every market by Brier and log
+                    loss, not just hit rate, and compares the model with the bookmaker market’s own
+                    implied probabilities wherever a pre-kickoff price was logged — the benchmark a
+                    betting model has to beat.
                 </p>
             </section>
 
@@ -80,8 +91,9 @@ export default function MethodPage() {
                     highest combined model probability — the safest slip that fits. In{' '}
                     <em>single-market</em> mode it just takes the strongest N selections in your chosen
                     market. Combined probability is the product of the legs, which assumes they’re
-                    independent; real fixtures are only roughly so, and the underlying probabilities are
-                    not yet calibrated — so the combined figure is a guide, not a true win chance. Against
+                    independent; real fixtures are only roughly so, and only the match-outcome and corners
+                    probabilities are recalibrated against the record (goals and both-teams-to-score are
+                    not yet) — so the combined figure is a guide, not a true win chance. Against
                     real odds an accumulator’s expected value is almost always negative, because each leg
                     carries the bookmaker’s margin.
                 </p>

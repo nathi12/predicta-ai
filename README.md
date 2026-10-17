@@ -20,21 +20,26 @@ Live: <https://predicta-ai-tpke.vercel.app/>
 Full write-up at [`/method`](https://predicta-ai-tpke.vercel.app/method). In short:
 
 1. **Venue-aware strength** — attack/defence ratings from the home and away
-   league tables, normalised to the division average, shrunk toward the mean
-   while sample sizes are small.
+   league tables, normalised to the division average, shrunk hard toward the
+   mean (a 40-game prior — the backtest found table rates are a noisy read).
 2. **Dixon-Coles goal model** — a bivariate Poisson with the low-scoring-draw
    correction. Every market is read off one score matrix, so the numbers are
    mutually consistent.
 3. **Elo** — seeded from the table, refined by replaying this season's results;
-   provides a second opinion on 1X2 (blended 58/42 with the goal model).
+   the 1X2 blends it 70/30 with the goal model.
 4. **Form & head-to-head** nudge the expected-goals figures.
 5. **Enrichment** — for imminent fixtures, within a strict daily API budget,
    live form and the provider's own probabilities from API-Football are blended
    in. Those fixtures are marked *Enriched*; the rest run on *Core data*.
 6. **Calibration** — once ~150 predictions have been graded, a recalibration
-   curve learned from that log (favourite probability vs how often it actually
-   landed) is relearned on every rebuild and folded back into the 1X2 output;
-   confidence is the sharpness of the distribution scaled by data quality.
+   curve learned from that log (the model's *raw* home/draw/away probabilities vs
+   how often each actually landed) is relearned on every rebuild and folded back
+   into the 1X2 output; corners get their own curves. Goals and BTTS aren't
+   recalibrated yet. Confidence is the sharpness of the distribution scaled by
+   data quality.
+
+The model's tunable constants live in `lib/prediction/params.ts` and are fitted
+by the backtest, not picked by hand — see below.
 
 **Realistic accuracy:** ~53–56% on match outcomes, ~58–68% on goals/BTTS.
 Corners start as a proxy off expected goals; once both sides have a few graded
@@ -83,18 +88,59 @@ npm run dev
 | --- | --- |
 | `npm run dev` | Dev server |
 | `npm run build` / `npm start` | Production build / serve |
-| `npm test` | Prediction-engine unit tests (`node --test`) |
+| `npm test` | Unit tests plus grading/storage tests against a throwaway file store (`node --test`; needs Node 22+) |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint |
+| `npm run backtest` | Replay past seasons through the model and fit its constants (see below) |
+
+CI (`.github/workflows/ci.yml`) runs typecheck, lint, tests and a production
+build on every push to `main` and every pull request — with no secrets, so it
+never touches the live KV store or API budgets.
 
 ## Grading
 
-`GET/POST /api/cron/grade` (auth: `Authorization: Bearer $CRON_SECRET` or
-`?key=`) scans pending predictions and curated slips, fetches final scores for
-matches that have finished (one batched lookup), scores each market, and folds
-the result into the rolling stats behind `/accuracy`. `vercel.json` runs it once
-a day at ~04:00 UTC — the Vercel Hobby cron limit — which is enough to clear the
-previous day's fixtures. Trigger it manually any time with the `?key=` param.
+`GET/POST /api/cron/grade` (auth: `Authorization: Bearer $CRON_SECRET`) scans
+pending predictions and curated slips, fetches final scores for matches that
+have finished (one batched lookup), scores each market, and folds the result
+into the rolling stats behind `/accuracy`. Grading is idempotent, so an
+overlapping run can't count a match twice. After responding it warms the page
+caches and logs the day's preset slips (one per preset, live prices only).
+`vercel.json` runs it once a day at ~04:00 UTC — the Vercel Hobby cron limit —
+which is enough to clear the previous day's fixtures. Trigger it manually any
+time:
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" https://predicta-ai-tpke.vercel.app/api/cron/grade
+```
+
+Every market is scored three ways: hit rate (which side of 50% the forecast
+fell), and Brier and log loss (how good the probability itself was). Each graded
+match is folded into three aggregates — all-time, its model version, and its
+kickoff day — so `/accuracy` can show all time, the last 90 days, or the live
+model on its own.
+
+**Model vs the market.** Every odds build logs the bookmaker market's implied
+probabilities (margin removed) for the fixtures it prices, refreshed toward the
+closing line until kickoff. At grading, the model and the market are scored on
+the same fixtures — the honest benchmark for a betting-adjacent model.
+
+## Backtest
+
+```bash
+npm run backtest                                   # train on last season, test on this one
+npm run backtest -- --seasons 2024,2025,2026       # more history
+npm run backtest -- --no-fit --params rho=-0.1     # score an alternative without fitting
+```
+
+The backtest rebuilds what the live model would have known before each finished
+match of a season — tables, form, standings-seeded Elo, league averages — from
+that season's results alone, predicts it with the live code, and scores it. It
+then fits the constants in `lib/prediction/params.ts` by coordinate descent on
+log loss (1X2 + over 2.5 + BTTS) over the training seasons, and reports both
+parameter sets on a held-out season next to a base-rate benchmark. One
+football-data.org call per league-season, cached under `.cache/backtest/`.
+Only adopt fitted values when they win on the held-out season. Not replayed:
+head-to-head and API-Football enrichment, which have no history.
 
 ## Project layout
 
@@ -102,11 +148,16 @@ previous day's fixtures. Trigger it manually any time with the `?key=` param.
 app/            routes: / (ISR), /accuracy, /method, /api/cron/grade
 components/     UI (server + client); MatchExplorer does client-side filter/sort only
 lib/
-  prediction/   the model — poisson, strength, elo, ensemble, corners, calibrate (+ tests)
-  matchData.ts  assembles fixtures + strength + predictions (KV-cached)
-  tracking.ts   prediction log + grading + rolling stats
+  prediction/   the model — poisson, strength, elo, ensemble, corners, calibrate, params
+  backtest/     season replay + scoring + parameter search (pure)
+  matchData.ts  assembles fixtures + strength + predictions (KV-cached, per league)
+  tracking.ts   prediction + market log, grading, aggregates (storage)
+  grading.ts    the grading arithmetic (pure)
+  scoring.ts    Brier / log loss
   kv.ts         Upstash wrapper with a filesystem fallback for dev
   leagues.ts    league config
+  __tests__/    store-backed and backtest tests
+scripts/        backtest.ts, KV inspection helpers
 services/       footballData.ts, apiFootball.ts (server-only API clients)
 types/          domain model
 ```

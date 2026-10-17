@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test \"lib/**/*.test.ts\""
+    "test": "node --conditions=react-server --import tsx --test \"lib/**/*.test.ts\"",
+    "backtest": "node --env-file-if-exists=.env.local --import tsx scripts/backtest.ts"
   },
   "dependencies": {
     "@upstash/redis": "^1.38.3",

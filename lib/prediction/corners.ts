@@ -12,6 +12,7 @@
 import type { CalibrationCurve } from './calibrate';
 import { applyPiecewise } from './calibrate';
 import type { CornerRate, LeagueConfig, MarketLine } from '@/types';
+import { clamp, round1, round3 } from '@/lib/num';
 import { poissonPmf } from './poisson';
 
 /** Venue-relevant samples needed before a side's history is trusted at all. */
@@ -35,9 +36,6 @@ export interface CornerRates {
     /** The away-side team's venue-split record. */
     away: CornerRate;
 }
-
-const round = (x: number) => Math.round(x * 1000) / 1000;
-const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
 
 // --- distribution -------------------------------------------------------
 
@@ -86,7 +84,7 @@ function calibrated(prob: number, curve?: CalibrationCurve): number {
 
 function line(prob: number): MarketLine {
     const lean = prob >= 0.62 ? 'over' : prob <= 0.38 ? 'under' : null;
-    return { probability: round(prob), lean };
+    return { probability: round3(prob), lean };
 }
 
 // --- expected total ----------------------------------------------------
@@ -131,7 +129,7 @@ export function blendedExpectedCorners(
     const nMin = Math.min(homeRate.n, awayRate.n);
     const w = nMin / (nMin + CORNER_RATES_PRIOR);
     const expected = clamp(w * teamEst + (1 - w) * proxy, 6, 15);
-    return { expected: round(expected), source: 'team-rates' };
+    return { expected: round3(expected), source: 'team-rates' };
 }
 
 // --- market ----------------------------------------------------------
@@ -154,6 +152,9 @@ export function cornersMarket(
     over115: MarketLine;
     expected: number;
     source: 'proxy' | 'team-rates';
+    /** Pre-recalibration over-9.5 / over-10.5 probabilities — what the curves learn from. */
+    raw95: number;
+    raw105: number;
 } {
     const proxy = expectedCorners(lambdaHome, lambdaAway, league);
     const { expected, source } = blendedExpectedCorners(proxy, rates);
@@ -161,15 +162,11 @@ export function cornersMarket(
     // Only the traded lines (9.5 / 10.5) have grading history to recalibrate
     // against; 8.5 / 11.5 stay on the raw model. Clamp the ladder non-increasing
     // so a recalibration nudge on a middle rung can't invert the display.
+    const raw95 = cornersOverProbability(expected, 9.5);
+    const raw105 = cornersOverProbability(expected, 10.5);
     const p85 = cornersOverProbability(expected, 8.5);
-    const p95 = Math.min(
-        calibrated(cornersOverProbability(expected, 9.5), calibration?.corners95),
-        p85,
-    );
-    const p105 = Math.min(
-        calibrated(cornersOverProbability(expected, 10.5), calibration?.corners105),
-        p95,
-    );
+    const p95 = Math.min(calibrated(raw95, calibration?.corners95), p85);
+    const p105 = Math.min(calibrated(raw105, calibration?.corners105), p95);
     const p115 = Math.min(cornersOverProbability(expected, 11.5), p105);
 
     return {
@@ -177,7 +174,9 @@ export function cornersMarket(
         over95: line(p95),
         over105: line(p105),
         over115: line(p115),
-        expected: Math.round(expected * 10) / 10,
+        expected: round1(expected),
         source,
+        raw95: round3(raw95),
+        raw105: round3(raw105),
     };
 }

@@ -1,17 +1,33 @@
 // lib/tracking.ts
 // Persist every prediction, then grade it against the final score. Powers the
-// /accuracy page. Storage is the shared KV store.
+// /accuracy page. Storage is the shared KV store; the arithmetic is in
+// lib/grading.ts.
+//
+// Every graded match is folded into three aggregates — all-time, its model
+// version, and its kickoff day (summed into "last 90 days" on read). They're
+// read-modify-write JSON, which is safe because the grade cron is their only
+// writer and holds a cross-instance lock for the whole run (see
+// app/api/cron/grade/route.ts).
 
 import 'server-only';
 import { store } from '@/lib/kv';
 import { hasApiFootball } from '@/lib/env';
 import { foldFixtureCorners } from '@/lib/cornerRates';
+import { MODEL_VERSION } from '@/lib/prediction';
+import {
+    cornerHits,
+    emptyRolling,
+    foldCorners,
+    foldResult,
+    gradeResult,
+    impliedProbabilities,
+    mergeStats,
+} from '@/lib/grading';
 import type {
-    CalibrationBin,
     EnrichedMatch,
+    FixtureOdds,
     GradedResult,
-    LeagueCode,
-    MarketStat,
+    MarketSnapshot,
     MatchPrediction,
     RollingStats,
     TrackedPrediction,
@@ -22,7 +38,19 @@ const PENDING_SET = 'pred:pending';
 // stats call. Drained by the grade cron, budget permitting.
 const CORNERS_PENDING_SET = 'pred:corners:pending';
 const predKey = (id: string) => `pred:${id}`;
+const marketKey = (id: string) => `pred:market:${id}`;
 const resultKey = (id: string) => `result:${id}`;
+
+const PRED_TTL = 45 * 24 * 60 * 60;
+
+// Aggregates. A day bucket outlives the 90-day window it feeds.
+const ALL_KEY = 'stats:rolling';
+const modelKey = (version: string) => `stats:model:${version}`;
+const dayKey = (day: string) => `stats:day:${day}`;
+const DAY_TTL = 100 * 24 * 60 * 60;
+const WINDOW_DAYS = 90;
+
+export type StatsView = 'all' | 'model' | '90d';
 
 /** Upsert a prediction and mark it pending grading. Idempotent. */
 export async function recordPrediction(
@@ -52,6 +80,7 @@ export async function recordPrediction(
         apiFootballFixtureId: match.apiFootballFixtureId,
         apiFootballHomeId: match.apiFootballHomeId,
         apiFootballAwayId: match.apiFootballAwayId,
+        raw: prediction.raw,
         modelVersion: prediction.modelVersion,
         createdAt: new Date().toISOString(),
     };
@@ -71,8 +100,30 @@ export async function recordPrediction(
         }
     }
 
-    await store.set(predKey(match.id), record, 45 * 24 * 60 * 60);
+    await store.set(predKey(match.id), record, PRED_TTL);
     await store.sadd(PENDING_SET, match.id);
+}
+
+/**
+ * Log the bookmaker market's implied probabilities for upcoming fixtures, keyed
+ * by match id. Called by every odds build, so the latest pre-kickoff price wins
+ * and the logged line ends up close to the closing one. Separate keys from the
+ * predictions so the slate build and the odds build never overwrite each other.
+ */
+export async function recordMarketOdds(odds: Record<string, FixtureOdds>): Promise<number> {
+    let logged = 0;
+    for (const [matchId, fixtureOdds] of Object.entries(odds)) {
+        const snapshot = impliedProbabilities(fixtureOdds);
+        if (!snapshot) continue;
+        await store.set(marketKey(matchId), snapshot, PRED_TTL);
+        logged++;
+    }
+    return logged;
+}
+
+/** Logged market snapshots in one round trip, in order; null where none was logged. */
+export async function getMarketMany(ids: string[]): Promise<Array<MarketSnapshot | null>> {
+    return store.mget<MarketSnapshot>(ids.map(marketKey));
 }
 
 export async function pendingMatchIds(): Promise<string[]> {
@@ -83,47 +134,60 @@ export async function getTracked(id: string): Promise<TrackedPrediction | null> 
     return store.get<TrackedPrediction>(predKey(id));
 }
 
-/** Grade one prediction against its final score and fold it into rolling stats. */
+/** Many tracked predictions in one round trip, in order; null where expired. */
+export async function getTrackedMany(ids: string[]): Promise<Array<TrackedPrediction | null>> {
+    return store.mget<TrackedPrediction>(ids.map(predKey));
+}
+
+/** Drop a match from the grading queue without grading it (record gone, match void). */
+export async function discardPending(matchId: string): Promise<void> {
+    await store.srem(PENDING_SET, matchId);
+}
+
+const RESULT_TTL = 120 * 24 * 60 * 60;
+
+/**
+ * Apply `fold` to each aggregate a tracked match belongs to: all-time, its model
+ * version, and its kickoff day.
+ */
+async function foldEverywhere(
+    tracked: TrackedPrediction,
+    fold: (stats: RollingStats) => void,
+): Promise<void> {
+    const buckets: Array<[string, () => RollingStats, number | undefined]> = [
+        [ALL_KEY, () => emptyRolling('all'), undefined],
+        [modelKey(tracked.modelVersion), () => emptyRolling('model', tracked.modelVersion), undefined],
+        [dayKey(tracked.kickoff.slice(0, 10)), () => emptyRolling('day'), DAY_TTL],
+    ];
+    for (const [key, init, ttl] of buckets) {
+        const stats = (await store.get<RollingStats>(key)) ?? init();
+        fold(stats);
+        await store.set(key, stats, ttl);
+    }
+}
+
+/**
+ * Grade one prediction against its final score and fold it into the aggregates,
+ * with the market's logged pre-kickoff probabilities when there are some.
+ * Returns null when another run already graded it — the atomic claim keeps an
+ * overlapping cron or manual trigger from counting a match twice.
+ */
 export async function gradePrediction(
     tracked: TrackedPrediction,
     finalHome: number,
     finalAway: number,
-): Promise<GradedResult> {
-    const actualOutcome =
-        finalHome > finalAway ? 'home' : finalHome === finalAway ? 'draw' : 'away';
-    const picked = (['home', 'draw', 'away'] as const).reduce((a, b) =>
-        tracked.outcome[a] >= tracked.outcome[b] ? a : b,
-    );
+    market?: MarketSnapshot | null,
+): Promise<GradedResult | null> {
+    const claim = await store.incr(`graded:${tracked.matchId}`, RESULT_TTL);
+    if (claim !== 1) {
+        await store.srem(PENDING_SET, tracked.matchId);
+        return null;
+    }
 
-    const totalGoals = finalHome + finalAway;
-    const btts = finalHome > 0 && finalAway > 0;
-
-    const p = tracked.outcome;
-    const y = {
-        home: actualOutcome === 'home' ? 1 : 0,
-        draw: actualOutcome === 'draw' ? 1 : 0,
-        away: actualOutcome === 'away' ? 1 : 0,
-    };
-    const brier1x2 =
-        (p.home - y.home) ** 2 + (p.draw - y.draw) ** 2 + (p.away - y.away) ** 2;
-
-    const result: GradedResult = {
-        matchId: tracked.matchId,
-        league: tracked.league,
-        finalScore: { home: finalHome, away: finalAway },
-        gradedAt: new Date().toISOString(),
-        hits: {
-            outcome: picked === actualOutcome,
-            over15: (tracked.markets.over15 >= 0.5) === totalGoals > 1.5,
-            over25: (tracked.markets.over25 >= 0.5) === totalGoals > 2.5,
-            btts: (tracked.markets.btts >= 0.5) === btts,
-        },
-        brier1x2,
-    };
-
-    await store.set(resultKey(tracked.matchId), result, 120 * 24 * 60 * 60);
+    const result = gradeResult(tracked, finalHome, finalAway);
+    await store.set(resultKey(tracked.matchId), result, RESULT_TTL);
     await store.srem(PENDING_SET, tracked.matchId);
-    await foldIntoRolling(tracked, result);
+    await foldEverywhere(tracked, (stats) => foldResult(stats, tracked, result, market));
 
     // Corners need a separate API-Football stats call — defer to the cron's
     // budget-capped pass rather than block grading on it.
@@ -161,7 +225,8 @@ export async function gradeCorners(
         getTracked(matchId),
         store.get<GradedResult>(resultKey(matchId)),
     ]);
-    if (!tracked || !result || tracked.markets.corners95 == null || tracked.markets.corners105 == null) {
+    const hits = tracked ? cornerHits(tracked, totalCorners) : null;
+    if (!tracked || !result || !hits) {
         await store.srem(CORNERS_PENDING_SET, matchId);
         return false;
     }
@@ -171,26 +236,10 @@ export async function gradeCorners(
         return false;
     }
 
-    const hit95 = (tracked.markets.corners95 >= 0.5) === totalCorners > 9.5;
-    const hit105 = (tracked.markets.corners105 >= 0.5) === totalCorners > 10.5;
-    result.hits.corners95 = hit95;
-    result.hits.corners105 = hit105;
-    await store.set(resultKey(matchId), result, 120 * 24 * 60 * 60);
-
-    const stats = (await store.get<RollingStats>('stats:rolling')) ?? emptyRolling();
-    if (!stats.corners95) stats.corners95 = emptyStat();
-    if (!stats.corners105) stats.corners105 = emptyStat();
-    if (!stats.cornersCalibration) {
-        stats.cornersCalibration = { over95: emptyCalBins(), over105: emptyCalBins() };
-    }
-    stats.corners95.n += 1;
-    stats.corners95.hits += hit95 ? 1 : 0;
-    stats.corners105.n += 1;
-    stats.corners105.hits += hit105 ? 1 : 0;
-    foldCalBin(stats.cornersCalibration.over95, tracked.markets.corners95, totalCorners > 9.5);
-    foldCalBin(stats.cornersCalibration.over105, tracked.markets.corners105, totalCorners > 10.5);
-    stats.updatedAt = new Date().toISOString();
-    await store.set('stats:rolling', stats);
+    result.hits.corners95 = hits.corners95;
+    result.hits.corners105 = hits.corners105;
+    await store.set(resultKey(matchId), result, RESULT_TTL);
+    await foldEverywhere(tracked, (stats) => foldCorners(stats, tracked, totalCorners));
 
     // Fold each side's count into the venue-split rate history — once per
     // fixture, shared with the backfill path via foldFixtureCorners' own gate.
@@ -207,82 +256,35 @@ export async function gradeCorners(
     return true;
 }
 
-// --- rolling aggregate ------------------------------------------------
+// --- reading the aggregates -----------------------------------------------
 
-const emptyStat = (): MarketStat => ({ n: 0, hits: 0, brier: 0 });
-
-const emptyCalBins = (): CalibrationBin[] =>
-    Array.from({ length: 10 }, (_, i) => ({ bin: i, predicted: 0, actual: 0, n: 0 }));
-
-/** Fold one graded forecast (prob of the "yes"/"over" side, and whether it landed)
- *  into its decile calibration bucket. */
-function foldCalBin(bins: CalibrationBin[], predicted: number, hit: boolean): void {
-    const b = bins[Math.min(9, Math.floor(predicted * 10))];
-    b.n += 1;
-    b.predicted += predicted;
-    b.actual += hit ? 1 : 0;
+/**
+ * One view of the record: all-time, the live model version only, or the last
+ * 90 days of kickoffs (day buckets summed on read). Null before anything in
+ * that view was graded.
+ */
+export async function getRollingStats(view: StatsView = 'all', now = new Date()): Promise<RollingStats | null> {
+    if (view === 'all') return store.get<RollingStats>(ALL_KEY);
+    if (view === 'model') return store.get<RollingStats>(modelKey(MODEL_VERSION));
+    const days = Array.from({ length: WINDOW_DAYS }, (_, i) =>
+        new Date(now.getTime() - i * 86_400_000).toISOString().slice(0, 10),
+    );
+    const buckets = await store.mget<RollingStats>(days.map(dayKey));
+    return mergeStats('90d', buckets.filter((b): b is RollingStats => b != null));
 }
 
-function emptyRolling(): RollingStats {
-    return {
-        updatedAt: new Date().toISOString(),
-        window: 'all',
-        outcome: emptyStat(),
-        over15: emptyStat(),
-        over25: emptyStat(),
-        btts: emptyStat(),
-        corners95: emptyStat(),
-        corners105: emptyStat(),
-        calibration: emptyCalBins(),
-        cornersCalibration: { over95: emptyCalBins(), over105: emptyCalBins() },
-        byLeague: {},
-    };
-}
-
-async function foldIntoRolling(tracked: TrackedPrediction, r: GradedResult): Promise<void> {
-    const stats = (await store.get<RollingStats>('stats:rolling')) ?? emptyRolling();
-    // over15 was added after the first grades landed — older aggregates lack it.
-    if (!stats.over15) stats.over15 = emptyStat();
-
-    stats.outcome.n += 1;
-    stats.outcome.hits += r.hits.outcome ? 1 : 0;
-    stats.outcome.brier += r.brier1x2;
-
-    stats.over15.n += 1;
-    stats.over15.hits += r.hits.over15 ? 1 : 0;
-
-    stats.over25.n += 1;
-    stats.over25.hits += r.hits.over25 ? 1 : 0;
-
-    stats.btts.n += 1;
-    stats.btts.hits += r.hits.btts ? 1 : 0;
-
-    const fav = Math.max(tracked.outcome.home, tracked.outcome.draw, tracked.outcome.away);
-    foldCalBin(stats.calibration, fav, r.hits.outcome);
-
-    const lg = (stats.byLeague[tracked.league] ?? emptyStat()) as MarketStat;
-    lg.n += 1;
-    lg.hits += r.hits.outcome ? 1 : 0;
-    lg.brier += r.brier1x2;
-    stats.byLeague[tracked.league as LeagueCode] = lg;
-
-    stats.updatedAt = new Date().toISOString();
-    await store.set('stats:rolling', stats);
-}
-
-export async function getRollingStats(): Promise<RollingStats | null> {
-    return store.get<RollingStats>('stats:rolling');
-}
-
+/** The most recently graded predictions, newest first (from a capped id list). */
 export async function recentResults(limit = 20): Promise<Array<GradedResult & { tracked: TrackedPrediction | null }>> {
-    // Best-effort: we don't keep an ordered list, so scan pending-adjacent keys
-    // is not possible; instead maintain a capped recent list.
-    const ids = (await store.get<string[]>('result:recent')) ?? [];
+    const ids = ((await store.get<string[]>('result:recent')) ?? []).slice(0, limit);
+    if (ids.length === 0) return [];
+    const [results, tracked] = await Promise.all([
+        store.mget<GradedResult>(ids.map(resultKey)),
+        getTrackedMany(ids),
+    ]);
     const out: Array<GradedResult & { tracked: TrackedPrediction | null }> = [];
-    for (const id of ids.slice(0, limit)) {
-        const res = await store.get<GradedResult>(resultKey(id));
-        if (res) out.push({ ...res, tracked: await getTracked(id) });
-    }
+    results.forEach((res, i) => {
+        if (res) out.push({ ...res, tracked: tracked[i] });
+    });
     return out;
 }
 

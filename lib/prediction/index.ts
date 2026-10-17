@@ -11,6 +11,7 @@ import type {
     OutcomeProbabilities,
 } from '@/types';
 import { leagueByCode, LEAGUES } from '@/lib/leagues';
+import { clamp, round1, round3 } from '@/lib/num';
 import {
     bttsProbability,
     buildScoreMatrix,
@@ -24,11 +25,16 @@ import { eloOutcome } from './elo';
 import { blendOutcomes } from './ensemble';
 import { cornersMarket, type CornerRates } from './corners';
 import { calibrateOutcome, confidenceScore, type CalibrationMap } from './calibrate';
+import { DEFAULT_PARAMS, type ModelParams } from './params';
 
+// 2.5.0 — constants fitted by backtest (lib/prediction/params.ts): much stronger
+// shrinkage, rho −0.15, an Elo-heavier 1X2 blend.
+// 2.4.0 — recalibration curves learned from logged raw probabilities (1X2
+// one-vs-rest) instead of the published, already-calibrated ones.
 // 2.3.0 — corners: venue-split team-rate history, negative-binomial total, and
 // their own recalibration curve. 2.2.0 — corners lines blended with each side's
 // real corners history; outcome probabilities recalibrated against the grading log.
-export const MODEL_VERSION = '2.3.0';
+export const MODEL_VERSION = '2.5.0';
 
 export interface PredictOptions {
     /** Precomputed league averages (from the HOME/AWAY standings tables). */
@@ -36,23 +42,23 @@ export interface PredictOptions {
     calibration?: CalibrationMap;
     /** Each side's rolling corners-per-game history, when we have it. */
     cornerRates?: CornerRates;
+    /** Overrides for the tunable constants — the backtest only; production uses the defaults. */
+    params?: Partial<ModelParams>;
 }
 
 function goalsLine(prob: number, over: number, under: number): MarketLine {
     const lean = prob >= over ? 'over' : prob <= under ? 'under' : null;
-    return { probability: round(prob), lean };
+    return { probability: round3(prob), lean };
 }
 
 function bttsLine(prob: number): MarketLine {
     const lean = prob >= 0.6 ? 'yes' : prob <= 0.4 ? 'no' : null;
-    return { probability: round(prob), lean };
+    return { probability: round3(prob), lean };
 }
-
-const round = (x: number) => Math.round(x * 1000) / 1000;
-const round1 = (x: number) => Math.round(x * 10) / 10;
 
 export function predictMatch(match: EnrichedMatch, opts: PredictOptions = {}): MatchPrediction {
     const league = leagueByCode(match.league) ?? LEAGUES.PL;
+    const params: ModelParams = { ...DEFAULT_PARAMS, ...opts.params };
 
     const avg =
         opts.leagueAverages ??
@@ -63,49 +69,47 @@ export function predictMatch(match: EnrichedMatch, opts: PredictOptions = {}): M
         );
 
     // --- expected goals -------------------------------------------------
-    const base = baseExpectedGoals(match.home, match.away, league, avg);
+    const base = baseExpectedGoals(match.home, match.away, league, avg, params);
     let { home: lambdaHome, away: lambdaAway } = base;
 
-    // Head-to-head nudge on the total (max ~7%).
+    // Head-to-head nudge on the total (a small weight on a clamped ratio).
     if (match.h2h && match.h2h.matches >= 4) {
         const h2hTotal = match.h2h.avgGoals;
         const modelTotal = lambdaHome + lambdaAway;
         if (modelTotal > 0 && h2hTotal > 0) {
             const ratio = clamp(h2hTotal / modelTotal, 0.86, 1.14);
-            const w = 0.1; // small weight
+            const w = params.h2hWeight;
             lambdaHome *= 1 + w * (ratio - 1);
             lambdaAway *= 1 + w * (ratio - 1);
         }
     }
 
     // --- score matrix + markets --------------------------------------
-    const { matrix } = buildScoreMatrix(lambdaHome, lambdaAway);
+    const { matrix } = buildScoreMatrix(lambdaHome, lambdaAway, params.rho);
     const poissonOutcome = outcomeFromMatrix(matrix);
 
     // --- Elo 1X2 ----------------------------------------------------
-    const elo = eloOutcome(match.home.elo, match.away.elo);
+    const elo = eloOutcome(match.home.elo, match.away.elo, params.eloHomeAdvantage);
 
     // --- ensemble + calibration -----------------------------------
-    const blended = blendOutcomes(poissonOutcome, elo, match.providerOutcome ?? null);
+    const blended = blendOutcomes(poissonOutcome, elo, match.providerOutcome ?? null, params);
     const outcome: OutcomeProbabilities = calibrateOutcome(blended, opts.calibration);
 
     // --- goals / btts / corners markets --------------------------
+    const c = cornersMarket(lambdaHome, lambdaAway, league, opts.cornerRates, opts.calibration);
     const markets: MarketProbabilities = {
         over15: goalsLine(overProbability(matrix, 1.5), 0.7, 0.3),
         over25: goalsLine(overProbability(matrix, 2.5), 0.58, 0.42),
         over35: goalsLine(overProbability(matrix, 3.5), 0.5, 0.35),
         btts: bttsLine(bttsProbability(matrix)),
-        corners: (() => {
-            const c = cornersMarket(lambdaHome, lambdaAway, league, opts.cornerRates, opts.calibration);
-            return {
-                over85: c.over85,
-                over95: c.over95,
-                over105: c.over105,
-                over115: c.over115,
-                expected: c.expected,
-                source: c.source,
-            };
-        })(),
+        corners: {
+            over85: c.over85,
+            over95: c.over95,
+            over105: c.over105,
+            over115: c.over115,
+            expected: c.expected,
+            source: c.source,
+        },
     };
 
     // --- confidence ----------------------------------------------
@@ -126,15 +130,15 @@ export function predictMatch(match: EnrichedMatch, opts: PredictOptions = {}): M
     const scorelines = topScorelines(matrix, 4).map((s) => ({
         home: s.home,
         away: s.away,
-        probability: round(s.probability),
+        probability: round3(s.probability),
     }));
 
     return {
         matchId: match.id,
         outcome: {
-            home: round(outcome.home),
-            draw: round(outcome.draw),
-            away: round(outcome.away),
+            home: round3(outcome.home),
+            draw: round3(outcome.draw),
+            away: round3(outcome.away),
         },
         expectedGoals: {
             home: round1(lambdaHome),
@@ -148,11 +152,16 @@ export function predictMatch(match: EnrichedMatch, opts: PredictOptions = {}): M
         dataQuality: match.dataQuality,
         drivers: buildDrivers(match, { lambdaHome, lambdaAway, outcome, elo }),
         modelVersion: MODEL_VERSION,
+        raw: {
+            outcome: {
+                home: round3(blended.home),
+                draw: round3(blended.draw),
+                away: round3(blended.away),
+            },
+            corners95: c.raw95,
+            corners105: c.raw105,
+        },
     };
-}
-
-function clamp(x: number, lo: number, hi: number): number {
-    return Math.max(lo, Math.min(hi, x));
 }
 
 interface DriverContext {

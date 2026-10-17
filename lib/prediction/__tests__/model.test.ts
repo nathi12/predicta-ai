@@ -22,6 +22,9 @@ import {
     buildCalibrationMap,
     buildCornerCalibrationMap,
     calibrateOutcome,
+    calibrationFromStats,
+    cornersCalibrationFromStats,
+    outcomeCalibrationFromStats,
     CALIBRATION_MIN_TOTAL,
 } from '@/lib/prediction/calibrate';
 import { predictMatch } from '@/lib/prediction';
@@ -222,6 +225,123 @@ test('predictMatch: an active calibration map reshapes the outcome, no map is a 
     assert.ok(calibrated.outcome.home < raw.outcome.home, 'overconfident favourite corrected down');
     // No map => byte-identical to the default call.
     assert.deepEqual(predictMatch(match, { calibration: undefined }).outcome, raw.outcome);
+});
+
+test('predictMatch: logs the pre-calibration probabilities alongside the published ones', () => {
+    const match: EnrichedMatch = {
+        id: 'PL-10',
+        footballDataId: 10,
+        league: 'PL',
+        leagueName: 'Premier League',
+        kickoff: new Date(Date.now() + 86_400_000).toISOString(),
+        home: team('Alpha', 1720, true),
+        away: team('Beta', 1400, false),
+        dataQuality: 'core',
+    };
+    const down = [
+        { x: 0, y: 0 },
+        { x: 0.3, y: 0.3 },
+        { x: 0.6, y: 0.48 },
+        { x: 1, y: 1 },
+    ];
+    const plain = predictMatch(match);
+    const calibrated = predictMatch(match, {
+        calibration: { outcome: down, corners95: down, corners105: down },
+    });
+
+    // Uncalibrated, raw and published agree.
+    assert.deepEqual(plain.raw?.outcome, plain.outcome);
+    // Calibrated, the published figures move but the logged raw ones don't —
+    // they're what the learning bins must be fed.
+    assert.deepEqual(calibrated.raw, plain.raw);
+    assert.notDeepEqual(calibrated.outcome, calibrated.raw?.outcome);
+    assert.equal(calibrated.raw?.corners95, plain.markets.corners?.over95.probability);
+    assert.ok(calibrated.markets.corners!.over95.probability <= calibrated.raw!.corners95!);
+});
+
+// --- choosing the live curves from the grading log ------------------------
+
+const emptyStat = () => ({ n: 0, hits: 0, brier: 0 });
+
+function stats(over: Partial<RollingStats> = {}): RollingStats {
+    return {
+        updatedAt: '',
+        window: 'all',
+        outcome: emptyStat(),
+        over15: emptyStat(),
+        over25: emptyStat(),
+        btts: emptyStat(),
+        corners95: emptyStat(),
+        corners105: emptyStat(),
+        calibration: calBins([]),
+        cornersCalibration: { over95: calBins([]), over105: calBins([]) },
+        byLeague: {},
+        ...over,
+    };
+}
+
+/** One-vs-rest raw 1X2 bins for `matches` graded matches (three points each). */
+const rawOutcomeBins = (matches: number) =>
+    calBins([
+        { x: 0.25, hitRate: 0.2, n: matches },
+        { x: 0.3, hitRate: 0.28, n: matches },
+        { x: 0.55, hitRate: 0.45, n: matches },
+    ]);
+
+const publishedFavBins = calBins([
+    { x: 0.45, hitRate: 0.4, n: 80 },
+    { x: 0.65, hitRate: 0.55, n: 80 },
+]);
+
+test('calibration choice: identity until either sample is deep enough', () => {
+    const s = stats();
+    assert.equal(outcomeCalibrationFromStats(s).source, 'none');
+    assert.equal(cornersCalibrationFromStats(s).source, 'none');
+    assert.equal(calibrationFromStats(s), undefined);
+});
+
+test('calibration choice: interim published-figure curve while the raw sample builds', () => {
+    const s = stats({
+        calibration: publishedFavBins,
+        rawCalibration: {
+            outcome: rawOutcomeBins(CALIBRATION_MIN_TOTAL - 1),
+            over95: calBins([]),
+            over105: calBins([]),
+        },
+    });
+    const choice = outcomeCalibrationFromStats(s);
+    assert.equal(choice.source, 'interim');
+    assert.equal(choice.rawGraded, CALIBRATION_MIN_TOTAL - 1);
+    assert.deepEqual(choice.curves, buildCalibrationMap(publishedFavBins));
+});
+
+test('calibration choice: raw one-vs-rest curve takes over once enough matches are graded', () => {
+    const rawBins = rawOutcomeBins(CALIBRATION_MIN_TOTAL);
+    const s = stats({
+        calibration: publishedFavBins,
+        rawCalibration: { outcome: rawBins, over95: calBins([]), over105: calBins([]) },
+    });
+    const choice = outcomeCalibrationFromStats(s);
+    assert.equal(choice.source, 'raw');
+    assert.equal(choice.rawGraded, CALIBRATION_MIN_TOTAL);
+    assert.deepEqual(choice.curves, buildCalibrationMap(rawBins, 3 * CALIBRATION_MIN_TOTAL));
+    assert.deepEqual(calibrationFromStats(s)?.outcome, choice.curves?.outcome);
+});
+
+test('calibration choice: corners learn from raw bins once deep, independently of 1X2', () => {
+    const raw95 = calBins([
+        { x: 0.45, hitRate: 0.35, n: 80 },
+        { x: 0.65, hitRate: 0.5, n: 90 },
+    ]);
+    const raw105 = calBins([
+        { x: 0.4, hitRate: 0.3, n: 80 },
+        { x: 0.6, hitRate: 0.46, n: 90 },
+    ]);
+    const s = stats({ rawCalibration: { outcome: calBins([]), over95: raw95, over105: raw105 } });
+    const choice = cornersCalibrationFromStats(s);
+    assert.equal(choice.source, 'raw');
+    assert.deepEqual(choice.curves, buildCornerCalibrationMap(raw95, raw105));
+    assert.equal(outcomeCalibrationFromStats(s).source, 'none');
 });
 
 // --- corners: proxy vs venue-split team-rate blend ----------------------

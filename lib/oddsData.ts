@@ -7,10 +7,11 @@
 // without touching predictions.
 
 import 'server-only';
-import { after } from 'next/server';
-import { store } from '@/lib/kv';
+import { store, tryLock } from '@/lib/kv';
+import { keepAlive, singleFlight } from '@/lib/flight';
 import { log } from '@/lib/log';
 import { getUpcomingMatches } from '@/lib/matchData';
+import { recordMarketOdds } from '@/lib/tracking';
 import { getFixtureOdds } from '@/services/apiFootball';
 import type { FixtureOdds } from '@/types';
 
@@ -25,8 +26,9 @@ const EMPTY_TTL = 20 * 60;
 const STALE_TTL = 36 * 60 * 60;
 const HOURS_AHEAD = 96;
 const MAX_PER_BUILD = 10;
-
-const globalForFlight = globalThis as unknown as { __predictaOdds?: Promise<OddsMap> };
+// One odds build at a time across instances — /odds is the scarcest budget.
+const BUILD_LOCK = 'lock:odds';
+const BUILD_LOCK_TTL = 90;
 
 /**
  * Odds keyed by match id. Never blocks the slip page: returns whatever is cached
@@ -44,31 +46,23 @@ export async function getUpcomingOdds(): Promise<OddsMap> {
 }
 
 function ensureBuild(): Promise<OddsMap> {
-    if (!globalForFlight.__predictaOdds) {
-        globalForFlight.__predictaOdds = (async () => {
-            try {
-                const built = await build();
-                const n = Object.keys(built).length;
-                await store.set(CACHE_KEY, built, n > 0 ? TTL : EMPTY_TTL);
-                if (n > 0) await store.set(STALE_KEY, built, STALE_TTL);
-                return n > 0 ? built : ((await store.get<OddsMap>(STALE_KEY)) ?? {});
-            } catch (err) {
-                log.warn('odds build failed', (err as Error).message);
-                return (await store.get<OddsMap>(STALE_KEY)) ?? {};
-            } finally {
-                globalForFlight.__predictaOdds = undefined;
-            }
-        })();
-    }
-    return globalForFlight.__predictaOdds;
-}
-
-function keepAlive(p: Promise<unknown>): void {
-    try {
-        after(() => p.catch(() => {}));
-    } catch {
-        p.catch(() => {});
-    }
+    return singleFlight('odds', async () => {
+        const release = await tryLock(BUILD_LOCK, BUILD_LOCK_TTL);
+        // Another instance is building; serve the last good map meanwhile.
+        if (!release) return (await store.get<OddsMap>(STALE_KEY)) ?? {};
+        try {
+            const built = await build();
+            const n = Object.keys(built).length;
+            await store.set(CACHE_KEY, built, n > 0 ? TTL : EMPTY_TTL);
+            if (n > 0) await store.set(STALE_KEY, built, STALE_TTL);
+            return n > 0 ? built : ((await store.get<OddsMap>(STALE_KEY)) ?? {});
+        } catch (err) {
+            log.warn('odds build failed', (err as Error).message);
+            return (await store.get<OddsMap>(STALE_KEY)) ?? {};
+        } finally {
+            await release();
+        }
+    });
 }
 
 /** Rebuild the odds cache ahead of traffic if stale (called by the daily cron). */
@@ -96,5 +90,11 @@ async function build(): Promise<OddsMap> {
         const odds = await getFixtureOdds(m.match.apiFootballFixtureId as number);
         if (odds && Object.keys(odds.markets).length > 0) out[m.match.id] = odds;
     }
+
+    // Every target kicks off later, so this logs a pre-kickoff market line for the
+    // model-vs-market record; each rebuild refreshes it toward the closing price.
+    await recordMarketOdds(out).catch((err) =>
+        log.warn('market odds logging failed', (err as Error).message),
+    );
     return out;
 }

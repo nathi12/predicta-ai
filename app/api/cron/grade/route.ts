@@ -10,8 +10,10 @@
 // (football-data.org has no corner counts). It's rate-limited hard — see
 // drainCorners — so it stays well inside the shared free-tier budget.
 
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { NextResponse, after, type NextRequest } from 'next/server';
 import { CRON_SECRET } from '@/lib/env';
+import { tryLock } from '@/lib/kv';
 import { log } from '@/lib/log';
 import type { SlipRecord, TrackedPrediction } from '@/types';
 import { getMatchesByIds, type FDMatch } from '@/services/footballData';
@@ -25,10 +27,12 @@ import {
 import {
     gradePrediction,
     pendingMatchIds,
-    getTracked,
+    getMarketMany,
+    getTrackedMany,
     pushRecent,
     pendingCornerIds,
     gradeCorners,
+    discardPending,
     discardPendingCorner,
 } from '@/lib/tracking';
 import {
@@ -36,19 +40,38 @@ import {
     dequeueBackfillTeam,
     foldFixtureCorners,
 } from '@/lib/cornerRates';
-import { gradeSlip, getSlip, pendingSlipIds } from '@/lib/slipTracking';
-import { warmUpcomingMatches } from '@/lib/matchData';
-import { warmUpcomingOdds } from '@/lib/oddsData';
+import {
+    discardPendingSlip,
+    gradeSlip,
+    getSlips,
+    pendingSlipIds,
+    recordPresetSlips,
+} from '@/lib/slipTracking';
+import { getUpcomingMatches, warmUpcomingMatches } from '@/lib/matchData';
+import { getUpcomingOdds, warmUpcomingOdds } from '@/lib/oddsData';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 const SETTLE_MS = 2.5 * 3_600_000; // match + stoppage + buffer
+// No final score a week after kickoff = postponed or abandoned. Drop it from the
+// queue; a rescheduled fixture is re-queued by the next build that predicts it.
+const VOID_AFTER_MS = 7 * 24 * 3_600_000;
+// One grading run at a time across instances (a retried cron delivery, a manual
+// trigger). The run is the only writer of the read-modify-write aggregates —
+// rolling stats, corner rates, recent lists — so this lock is what keeps them
+// from losing updates. Outlives maxDuration as a safety net.
+const RUN_LOCK = 'lock:cron:grade';
+const RUN_LOCK_TTL = 120;
 
+const digest = (s: string) => createHash('sha256').update(s).digest();
+
+// Header only — a secret in the query string ends up in access logs. Hashing
+// both sides gives equal-length buffers for the constant-time compare.
 function authorized(req: NextRequest): boolean {
     if (!CRON_SECRET) return process.env.NODE_ENV !== 'production';
-    const header = req.headers.get('authorization');
-    return header === `Bearer ${CRON_SECRET}` || req.nextUrl.searchParams.get('key') === CRON_SECRET;
+    const header = req.headers.get('authorization') ?? '';
+    return timingSafeEqual(digest(header), digest(`Bearer ${CRON_SECRET}`));
 }
 
 const fdId = (matchId: string): number => Number(matchId.split('-')[1]);
@@ -63,21 +86,34 @@ async function run() {
     const now = Date.now();
 
     // --- collect what's due ------------------------------------------
+    // Records expire (45d); an id whose record is gone can never be graded, so
+    // it leaves the queue instead of being re-scanned on every run.
+    let discarded = 0;
     const predIds = await pendingMatchIds();
-    const duePreds: { matchId: string; footballDataId: number }[] = [];
-    for (const matchId of predIds) {
-        const tracked = await getTracked(matchId);
-        if (!tracked) continue;
-        if (new Date(tracked.kickoff).getTime() + SETTLE_MS > now) continue;
+    const trackedAll = await getTrackedMany(predIds);
+    const duePreds: { matchId: string; footballDataId: number; tracked: TrackedPrediction }[] = [];
+    for (const [i, matchId] of predIds.entries()) {
+        const tracked = trackedAll[i];
         const id = fdId(matchId);
-        if (Number.isFinite(id)) duePreds.push({ matchId, footballDataId: id });
+        if (!tracked || !Number.isFinite(id)) {
+            await discardPending(matchId);
+            discarded++;
+            continue;
+        }
+        if (new Date(tracked.kickoff).getTime() + SETTLE_MS > now) continue;
+        duePreds.push({ matchId, footballDataId: id, tracked });
     }
 
     const slipIds = await pendingSlipIds();
+    const slipsAll = await getSlips(slipIds);
     const dueSlips: SlipRecord[] = [];
-    for (const id of slipIds) {
-        const rec = await getSlip(id);
-        if (!rec) continue;
+    for (const [i, id] of slipIds.entries()) {
+        const rec = slipsAll[i];
+        if (!rec) {
+            await discardPendingSlip(id);
+            discarded++;
+            continue;
+        }
         if (rec.legs.some((l) => new Date(l.kickoff).getTime() + SETTLE_MS > now)) continue;
         dueSlips.push(rec);
     }
@@ -90,6 +126,7 @@ async function run() {
             pendingSlips: slipIds.length,
             graded: 0,
             slipsGraded: 0,
+            discarded,
             ...corners,
             ...backfill,
         };
@@ -104,15 +141,22 @@ async function run() {
     const byId = new Map(matches.map((m) => [m.id, m]));
 
     // --- grade predictions ----------------------------------------
+    // Each with the market's logged pre-kickoff line, where there is one.
+    const markets = await getMarketMany(duePreds.map((d) => d.matchId));
     let graded = 0;
-    for (const { matchId, footballDataId } of duePreds) {
+    for (const [i, { matchId, footballDataId, tracked }] of duePreds.entries()) {
         const score = finalScore(byId.get(footballDataId));
-        if (!score) continue;
-        const tracked = await getTracked(matchId);
-        if (!tracked) continue;
-        await gradePrediction(tracked, score.home, score.away);
-        await pushRecent(matchId);
-        graded++;
+        if (!score) {
+            if (now - new Date(tracked.kickoff).getTime() > VOID_AFTER_MS) {
+                await discardPending(matchId);
+                discarded++;
+            }
+            continue;
+        }
+        if (await gradePrediction(tracked, score.home, score.away, markets[i])) {
+            await pushRecent(matchId);
+            graded++;
+        }
     }
 
     // --- grade slips (all legs must have a final score) -----------
@@ -128,7 +172,13 @@ async function run() {
             }
             finals.set(l.matchId, score);
         }
-        if (complete && (await gradeSlip(rec, finals))) slipsGraded++;
+        if (complete) {
+            if (await gradeSlip(rec, finals)) slipsGraded++;
+        } else if (rec.legs.some((l) => now - new Date(l.kickoff).getTime() > VOID_AFTER_MS)) {
+            // A leg that still has no result a week on is void; the slip can't settle.
+            await discardPendingSlip(rec.slipId);
+            discarded++;
+        }
     }
 
     const corners = await drainCorners(now);
@@ -141,6 +191,7 @@ async function run() {
         dueSlips: dueSlips.length,
         graded,
         slipsGraded,
+        discarded,
         ...corners,
         ...backfill,
     };
@@ -170,8 +221,9 @@ async function drainCorners(now: number): Promise<{ pendingCorners: number; corn
 
     // Grade the freshest matches first; stale ones can wait or age out.
     const queue: Array<{ matchId: string; tracked: TrackedPrediction }> = [];
-    for (const matchId of ids) {
-        const tracked = await getTracked(matchId);
+    const trackedAll = await getTrackedMany(ids);
+    for (const [i, matchId] of ids.entries()) {
+        const tracked = trackedAll[i];
         if (!tracked || !tracked.apiFootballFixtureId || tracked.markets.corners95 == null) {
             await discardPendingCorner(matchId);
             continue;
@@ -253,28 +305,43 @@ async function drainCornerBackfill(): Promise<{ backfillTeams: number; backfillF
 
 /**
  * Rebuild the page caches so the day's first visitors don't trigger a cold
- * build. Runs after the response (best-effort — may be cut short by maxDuration,
- * which is fine: the grading that matters has already completed).
+ * build, then log the day's preset slips off the fresh slate. Runs after the
+ * response (best-effort — may be cut short by maxDuration, which is fine: the
+ * grading that matters has already completed). The slips are logged even if the
+ * warm fails, from whatever slate is cached.
  */
-async function warm(): Promise<void> {
+async function warm(origin: number): Promise<void> {
     try {
-        await warmUpcomingMatches();
+        await warmUpcomingMatches(origin);
         await warmUpcomingOdds();
     } catch (err) {
         log.warn('cache warm failed', (err as Error).message);
     }
+    try {
+        const [matches, odds] = await Promise.all([getUpcomingMatches(), getUpcomingOdds()]);
+        log.debug('preset slips logged', await recordPresetSlips(matches, odds));
+    } catch (err) {
+        log.warn('preset slip logging failed', (err as Error).message);
+    }
 }
 
 export async function GET(req: NextRequest) {
+    const startedAt = Date.now();
     if (!authorized(req)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    const release = await tryLock(RUN_LOCK, RUN_LOCK_TTL);
+    if (!release) {
+        return NextResponse.json({ ok: false, error: 'already running' }, { status: 409 });
+    }
     try {
         const summary = await run();
-        after(warm);
+        after(() => warm(startedAt));
         log.debug('grade cron', summary);
         return NextResponse.json({ ok: true, ...summary });
     } catch (err) {
         log.error('grade cron failed', (err as Error).message);
-        return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 500 });
+        return NextResponse.json({ ok: false, error: 'grading failed' }, { status: 500 });
+    } finally {
+        await release();
     }
 }
 

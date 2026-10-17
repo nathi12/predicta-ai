@@ -3,8 +3,8 @@
 // One KV-cached entry point: getUpcomingMatches().
 
 import 'server-only';
-import { after } from 'next/server';
-import { store } from '@/lib/kv';
+import { store, tryLock } from '@/lib/kv';
+import { keepAlive, singleFlight } from '@/lib/flight';
 import { hasApiFootball } from '@/lib/env';
 import { log } from '@/lib/log';
 import { LEAGUES, LEAGUE_CODES } from '@/lib/leagues';
@@ -24,8 +24,8 @@ import {
     type ApiFootballInsight,
 } from '@/services/apiFootball';
 import { buildRatings, seedFromRecord, type FinishedResult } from '@/lib/prediction/elo';
-import { computeLeagueAverages } from '@/lib/prediction/strength';
-import { buildCalibrationMap, buildCornerCalibrationMap } from '@/lib/prediction/calibrate';
+import { computeLeagueAverages, halfOf } from '@/lib/prediction/strength';
+import { calibrationFromStats } from '@/lib/prediction/calibrate';
 import { predictMatch } from '@/lib/prediction';
 import { recordPrediction, getRollingStats } from '@/lib/tracking';
 import { getAllCornerRates, pickRates, queueBackfillIfNeeded } from '@/lib/cornerRates';
@@ -81,11 +81,15 @@ function toTeam(r: FDTableRow): Team {
 
 interface LeagueBundle {
     code: LeagueCode;
-    teams: Map<number, TeamStrength>;
+    /** Every team's strength profile — an array so the bundle survives JSON. */
+    teams: TeamStrength[];
     averages: ReturnType<typeof computeLeagueAverages>;
     fixtures: FDMatch[];
+    /** Build time (ms); the bundle is fresh for BUNDLE_FRESH_MS. */
+    builtAt: number;
 }
 
+/** Fetch and build one league. null = the fetch failed; an empty fixture window is a valid bundle. */
 async function buildLeague(code: LeagueCode): Promise<LeagueBundle | null> {
     const cfg = LEAGUES[code];
     let standings: Awaited<ReturnType<typeof getStandings>>;
@@ -99,7 +103,15 @@ async function buildLeague(code: LeagueCode): Promise<LeagueBundle | null> {
         log.warn(`league ${code} fetch failed`, (err as Error).message);
         return null;
     }
-    if (fixtures.length === 0) return null;
+    if (fixtures.length === 0) {
+        return {
+            code,
+            teams: [],
+            averages: computeLeagueAverages([], [], cfg),
+            fixtures: [],
+            builtAt: Date.now(),
+        };
+    }
 
     const maxPlayed = standings.total.reduce((m, r) => Math.max(m, r.playedGames), 0);
     const finished =
@@ -130,21 +142,20 @@ async function buildLeague(code: LeagueCode): Promise<LeagueBundle | null> {
     // recent form from the finished-match feed instead.
     const recentForm = buildRecentForm(finished);
 
-    const teams = new Map<number, TeamStrength>();
-    for (const r of standings.total) {
+    const teams: TeamStrength[] = standings.total.map((r) => {
         const overall = rowToSplit(r);
         const home = rowToSplit(homeById.get(r.team.id));
         const away = rowToSplit(awayById.get(r.team.id));
         const form = parseForm(r.form);
-        teams.set(r.team.id, {
+        return {
             team: toTeam(r),
             overall,
             home: home.played > 0 ? home : halfOf(overall),
             away: away.played > 0 ? away : halfOf(overall),
             form: form.length > 0 ? form : (recentForm.get(r.team.id) ?? []),
             elo: ratings.get(r.team.id) ?? 1500,
-        });
-    }
+        };
+    });
 
     const averages = computeLeagueAverages(
         standings.home.map(rowToSplit),
@@ -152,7 +163,51 @@ async function buildLeague(code: LeagueCode): Promise<LeagueBundle | null> {
         cfg,
     );
 
-    return { code, teams, averages, fixtures };
+    return { code, teams, averages, fixtures, builtAt: Date.now() };
+}
+
+// --- per-league bundle cache ---------------------------------------------
+//
+// Football-Data's free tier is 10 req/min and a league costs up to three calls,
+// so refreshing all six can take minutes — longer than one serverless
+// invocation. Bundles are cached per league: each rebuild refreshes the stalest
+// leagues it has time for and serves the rest from their last good bundle.
+
+const bundleKey = (code: LeagueCode) => `league:v1:${code}`;
+const BUNDLE_FRESH_MS = 15 * 60_000;
+const BUNDLE_TTL = 48 * 60 * 60;
+/** Don't start a league refresh later than this into the build. */
+const LEAGUE_REFRESH_BUDGET_MS = 25_000;
+/** Don't start an optional per-fixture lookup (h2h, API-Football) later than this. */
+const ENRICH_BUDGET_MS = 40_000;
+
+/** Every league's bundle, refreshed as time allows. `complete` = all of them fresh. */
+async function loadBundles(origin: number): Promise<{ bundles: LeagueBundle[]; complete: boolean }> {
+    const prior = await store.mget<LeagueBundle>(LEAGUE_CODES.map(bundleKey));
+    const slots = LEAGUE_CODES.map((code, i) => ({ code, prev: prior[i] }));
+    // Stalest first, so successive rebuilds work through every league in turn.
+    slots.sort((a, b) => (a.prev?.builtAt ?? 0) - (b.prev?.builtAt ?? 0));
+
+    const bundles: LeagueBundle[] = [];
+    let complete = true;
+    // Sequential, not Promise.all: lets the shared 10-req/min budget pace the
+    // calls so every refreshed league gets a complete pull instead of 429s.
+    for (const { code, prev } of slots) {
+        if (prev && Date.now() - prev.builtAt < BUNDLE_FRESH_MS) {
+            bundles.push(prev);
+            continue;
+        }
+        const built =
+            Date.now() - origin < LEAGUE_REFRESH_BUDGET_MS ? await buildLeague(code) : null;
+        if (built) {
+            await store.set(bundleKey(code), built, BUNDLE_TTL);
+            bundles.push(built);
+        } else {
+            complete = false;
+            if (prev) bundles.push(prev);
+        }
+    }
+    return { bundles, complete };
 }
 
 /** Last-5 results per team (most recent first) from the finished-match feed. */
@@ -181,17 +236,6 @@ function buildRecentForm(finished: FDMatch[]): Map<number, Array<'W' | 'D' | 'L'
     return out;
 }
 
-function halfOf(r: RecordSplit): RecordSplit {
-    return {
-        played: Math.round(r.played / 2),
-        won: Math.round(r.won / 2),
-        draw: Math.round(r.draw / 2),
-        lost: Math.round(r.lost / 2),
-        goalsFor: r.goalsFor / 2,
-        goalsAgainst: r.goalsAgainst / 2,
-    };
-}
-
 function addDays(d: Date, n: number): Date {
     const x = new Date(d);
     x.setDate(x.getDate() + n);
@@ -216,20 +260,22 @@ function fallbackStrength(t: FDMatch['homeTeam']): TeamStrength {
     };
 }
 
-async function assemble(): Promise<MatchWithPrediction[]> {
-    // Sequential, not Promise.all: lets the shared 10-req/min budget pace the
-    // calls so every league gets a complete pull instead of half of them 429ing.
-    const bundles: LeagueBundle[] = [];
-    for (const code of LEAGUE_CODES) {
-        const b = await buildLeague(code);
-        if (b) bundles.push(b);
-    }
+/**
+ * Build the slate. `origin` is when the surrounding invocation started — the
+ * time budgets count from it so the build fits inside the function limit.
+ */
+async function assemble(
+    origin: number,
+): Promise<{ matches: MatchWithPrediction[]; complete: boolean }> {
+    const { bundles, complete } = await loadBundles(origin);
+    const canEnrich = () => Date.now() - origin < ENRICH_BUDGET_MS;
 
     // Flatten fixtures, sorted by kickoff.
-    type Pending = { bundle: LeagueBundle; fx: FDMatch };
+    type Pending = { bundle: LeagueBundle; teams: Map<number, TeamStrength>; fx: FDMatch };
     const pending: Pending[] = [];
     for (const bundle of bundles) {
-        for (const fx of bundle.fixtures) pending.push({ bundle, fx });
+        const teams = new Map(bundle.teams.map((t) => [t.team.id, t]));
+        for (const fx of bundle.fixtures) pending.push({ bundle, teams, fx });
     }
     pending.sort((a, b) => a.fx.utcDate.localeCompare(b.fx.utcDate));
 
@@ -239,33 +285,30 @@ async function assemble(): Promise<MatchWithPrediction[]> {
 
     // Recalibration curves learned from the grading log; undefined (→ identity)
     // until enough predictions have been graded. 1X2 and corners are learned
-    // separately so a thin corners sample never gates the 1X2 curve.
-    const calibrationStats = await getRollingStats();
-    const outcomeCal = calibrationStats
-        ? buildCalibrationMap(calibrationStats.calibration)
-        : undefined;
-    const cornerCal = calibrationStats
-        ? buildCornerCalibrationMap(
-              calibrationStats.cornersCalibration?.over95 ?? [],
-              calibrationStats.cornersCalibration?.over105 ?? [],
-          )
-        : undefined;
-    const calibration =
-        outcomeCal || cornerCal ? { ...outcomeCal, ...cornerCal } : undefined;
+    // separately so a thin corners sample never gates the 1X2 curve; the raw
+    // curves come from the live model version's own grades.
+    const [allTime, current] = await Promise.all([getRollingStats('all'), getRollingStats('model')]);
+    const calibration = allTime ? calibrationFromStats(allTime, current) : undefined;
 
     // Every team's rolling corners-per-game history, read once for the whole build.
     const cornerRates = await getAllCornerRates();
 
     const out: MatchWithPrediction[] = [];
 
-    for (const { bundle, fx } of pending) {
-        const cfg = LEAGUES[bundle.code];
-        const home = bundle.teams.get(fx.homeTeam.id) ?? fallbackStrength(fx.homeTeam);
-        const away = bundle.teams.get(fx.awayTeam.id) ?? fallbackStrength(fx.awayTeam);
+    for (const { bundle, teams, fx } of pending) {
         const hoursAhead = (new Date(fx.utcDate).getTime() - now) / 3_600_000;
+        // A stale bundle can still list a fixture that has since kicked off —
+        // never publish (or re-log) a prediction after kickoff.
+        if (hoursAhead <= 0) continue;
+
+        const cfg = LEAGUES[bundle.code];
+        // Copies: enrichment is applied per fixture and must not leak into the
+        // same team's other fixtures in the window.
+        const home = { ...(teams.get(fx.homeTeam.id) ?? fallbackStrength(fx.homeTeam)) };
+        const away = { ...(teams.get(fx.awayTeam.id) ?? fallbackStrength(fx.awayTeam)) };
 
         let h2h: HeadToHead | undefined;
-        if (h2hBudget > 0 && hoursAhead > 0 && hoursAhead <= H2H_HOURS_AHEAD) {
+        if (h2hBudget > 0 && hoursAhead <= H2H_HOURS_AHEAD && canEnrich()) {
             h2h = (await getHeadToHead(fx.id)) ?? undefined;
             h2hBudget--;
         }
@@ -274,7 +317,7 @@ async function assemble(): Promise<MatchWithPrediction[]> {
         // slip builder needs the fixture id for odds, the corners model needs the
         // team ids. Gated on a healthy budget; shares the cached fixture index.
         let afRef: AFFixtureRef | undefined;
-        if (hasApiFootball() && afBudget >= 2 && hoursAhead > 0 && hoursAhead <= AF_ID_HOURS_AHEAD) {
+        if (hasApiFootball() && afBudget >= 2 && hoursAhead <= AF_ID_HOURS_AHEAD && canEnrich()) {
             afRef = await resolveApiFootballFixtureId(fx, bundle.code);
         }
         const apiFootballFixtureId = afRef?.fixtureId;
@@ -294,7 +337,7 @@ async function assemble(): Promise<MatchWithPrediction[]> {
         let dataQuality: EnrichedMatch['dataQuality'] = 'core';
         let providerOutcome: EnrichedMatch['providerOutcome'];
 
-        if (apiFootballFixtureId && afBudget >= 2 && hoursAhead > 0 && hoursAhead <= ENRICH_HOURS_AHEAD) {
+        if (apiFootballFixtureId && afBudget >= 2 && hoursAhead <= ENRICH_HOURS_AHEAD && canEnrich()) {
             const insight = await getFixtureInsight(apiFootballFixtureId).catch(() => null);
             if (insight) {
                 afBudget -= 2;
@@ -335,7 +378,7 @@ async function assemble(): Promise<MatchWithPrediction[]> {
         );
     }
 
-    return out;
+    return { matches: out, complete };
 }
 
 /** Match a Football-Data fixture to its API-Football fixture + team ids. */
@@ -378,67 +421,79 @@ function applyInsight(home: TeamStrength, away: TeamStrength, insight: ApiFootba
 const CACHE_KEY = 'matches:v7';
 const STALE_KEY = 'matches:v7:stale';
 const FRESH_TTL = 15 * 60;
+/** A slate built partly from stale league bundles is retried sooner. */
+const PARTIAL_TTL = 2 * 60;
 const STALE_TTL = 48 * 60 * 60;
-
-// In-process single-flight: concurrent callers on one instance share one build.
-const globalForFlight = globalThis as unknown as {
-    __predictaAssemble?: Promise<MatchWithPrediction[]>;
-};
+// One slate build at a time across instances — each one spends the shared
+// free-tier API budgets. Outlives the 60s function limit as a safety net.
+const BUILD_LOCK = 'lock:matches';
+const BUILD_LOCK_TTL = 90;
 
 /**
  * Upcoming fixtures + predictions. Stale-while-revalidate: once a good build
  * exists, callers get it (or the last good build) instantly and any rebuild runs
- * detached — only the very first load ever waits for the full 6-league fetch.
+ * detached — only a cold start (nothing cached at all) ever waits.
  */
 export async function getUpcomingMatches(): Promise<MatchWithPrediction[]> {
     const fresh = await store.get<MatchWithPrediction[]>(CACHE_KEY);
     if (fresh && fresh.length > 0) return fresh;
 
-    const rebuild = ensureAssemble();
+    const rebuild = ensureAssemble(Date.now());
 
     const stale = await store.get<MatchWithPrediction[]>(STALE_KEY);
     if (stale && stale.length > 0) {
         keepAlive(rebuild);
         return stale;
     }
-    return rebuild;
+    return (await rebuild) ?? (await waitForBuild());
 }
 
-function ensureAssemble(): Promise<MatchWithPrediction[]> {
-    if (!globalForFlight.__predictaAssemble) {
-        globalForFlight.__predictaAssemble = (async () => {
-            try {
-                const built = await assemble();
-                if (built.length > 0) {
-                    await store.set(CACHE_KEY, built, FRESH_TTL);
-                    await store.set(STALE_KEY, built, STALE_TTL);
-                    return built;
-                }
-                // Nothing came back (rate limits / outage) — never overwrite a
-                // good cache with an empty one; serve the last good build.
-                return (await store.get<MatchWithPrediction[]>(STALE_KEY)) ?? [];
-            } finally {
-                globalForFlight.__predictaAssemble = undefined;
+/**
+ * Rebuild the slate unless another instance already is. Resolves to the new
+ * slate (or the last good one), or null when the build lock is held elsewhere.
+ */
+function ensureAssemble(origin: number): Promise<MatchWithPrediction[] | null> {
+    return singleFlight('matches', async () => {
+        const release = await tryLock(BUILD_LOCK, BUILD_LOCK_TTL);
+        if (!release) return null;
+        try {
+            const { matches, complete } = await assemble(origin);
+            if (matches.length > 0) {
+                await store.set(CACHE_KEY, matches, complete ? FRESH_TTL : PARTIAL_TTL);
+                await store.set(STALE_KEY, matches, STALE_TTL);
+                return matches;
             }
-        })();
-    }
-    return globalForFlight.__predictaAssemble;
+            // Nothing came back (rate limits / outage) — never overwrite a
+            // good cache with an empty one; serve the last good build.
+            return (await store.get<MatchWithPrediction[]>(STALE_KEY)) ?? [];
+        } finally {
+            await release();
+        }
+    });
 }
 
-/** Extend the serverless invocation until a detached rebuild finishes, when possible. */
-function keepAlive(p: Promise<unknown>): void {
-    try {
-        after(() => p.catch(() => {}));
-    } catch {
-        // Not in a request scope (script / test) — the single-flight promise
-        // still runs; swallow its rejection so it isn't unhandled.
-        p.catch(() => {});
+/**
+ * Cold start while another instance holds the build lock: wait for its slate.
+ * The lock is read before the slate — the builder writes the slate before it
+ * releases — so a released lock with no slate means that build came back empty.
+ */
+async function waitForBuild(): Promise<MatchWithPrediction[]> {
+    for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 2_000));
+        const building = await store.get<string>(BUILD_LOCK);
+        const built = await store.get<MatchWithPrediction[]>(STALE_KEY);
+        if (built && built.length > 0) return built;
+        if (!building) return [];
     }
+    return [];
 }
 
-/** Rebuild the caches ahead of traffic if stale (called by the daily cron). */
-export async function warmUpcomingMatches(): Promise<number> {
+/**
+ * Rebuild the caches ahead of traffic if stale (called by the daily cron).
+ * `origin` is the cron invocation's start, so the build respects its time limit.
+ */
+export async function warmUpcomingMatches(origin = Date.now()): Promise<number> {
     const fresh = await store.get<MatchWithPrediction[]>(CACHE_KEY);
     if (fresh && fresh.length > 0) return fresh.length;
-    return (await ensureAssemble()).length;
+    return (await ensureAssemble(origin))?.length ?? 0;
 }

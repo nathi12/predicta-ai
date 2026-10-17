@@ -1,12 +1,19 @@
 // lib/slipTracking.ts
-// Persist the app's canonical preset slips when they're shown, then grade them
-// against the final scores. Powers the "Bet-slip record" on /accuracy. Mirrors
-// lib/tracking.ts; storage is the shared KV store.
+// Log the app's canonical preset slips once a day (from the grade cron), then
+// grade them against the final scores. Powers the "Bet-slip record" on /accuracy.
+// Mirrors lib/tracking.ts; storage is the shared KV store.
+//
+// The record is only honest if it's independent of traffic and settles at prices
+// a bettor could actually get: one slip per preset per UTC day, built only from
+// selections with live bookmaker odds, and settled at those odds.
+//
+// Like lib/tracking.ts, the aggregates are read-modify-write JSON, written only
+// by the grade cron under its cross-instance lock.
 
 import 'server-only';
-import { createHash } from 'node:crypto';
 import { store } from '@/lib/kv';
 import { log } from '@/lib/log';
+import { round2, round3 } from '@/lib/num';
 import { MODEL_VERSION } from '@/lib/prediction';
 import { buildSlip } from '@/lib/slip/build';
 import { enumerateSelections } from '@/lib/slip/selections';
@@ -24,12 +31,14 @@ import type {
 
 const PENDING_SET = 'slip:pending';
 const RECENT_KEY = 'slip:recent';
-const STATS_KEY = 'stats:slips:rolling';
+// v2: one slip per preset per day, book odds only. The v1 aggregate (logged per
+// page view, partly settled at fair odds) is left in place but no longer read.
+const STATS_KEY = 'stats:slips:rolling:v2';
 const slipKey = (id: string) => `slip:${id}`;
 const resultKey = (id: string) => `result:slip:${id}`;
+const SLIP_TTL = 45 * 24 * 60 * 60;
+const RESULT_TTL = 120 * 24 * 60 * 60;
 
-const round3 = (x: number) => Math.round(x * 1000) / 1000;
-const round2 = (x: number) => Math.round(x * 100) / 100;
 
 /** Markets whose outcome can be read off a final score. Corners cannot. */
 const GRADABLE = new Set([
@@ -47,7 +56,12 @@ const GRADABLE = new Set([
 
 // --- write path -------------------------------------------------------
 
-function toRecord(presetId: string, mode: SlipRecord['mode'], slip: BetSlip): SlipRecord {
+function toRecord(
+    presetId: string,
+    mode: SlipRecord['mode'],
+    slip: BetSlip,
+    day: string,
+): SlipRecord {
     const legs: SlipLeg[] = slip.legs.map((l) => ({
         matchId: l.matchId,
         league: l.league,
@@ -60,13 +74,8 @@ function toRecord(presetId: string, mode: SlipRecord['mode'], slip: BetSlip): Sl
         bookOdds: l.bookOdds != null ? round2(l.bookOdds) : null,
         oddsSource: l.oddsSource,
     }));
-    const signature = legs
-        .map((l) => `${l.matchId}:${l.market}`)
-        .sort()
-        .join('|');
-    const slipId = `${presetId}:${createHash('sha1').update(signature).digest('hex').slice(0, 12)}`;
     return {
-        slipId,
+        slipId: `${presetId}:${day}`,
         presetId,
         mode,
         legs,
@@ -75,43 +84,53 @@ function toRecord(presetId: string, mode: SlipRecord['mode'], slip: BetSlip): Sl
         combinedBookOdds: slip.combinedBookOdds != null ? round2(slip.combinedBookOdds) : null,
         modelVersion: MODEL_VERSION,
         createdAt: new Date().toISOString(),
+        day,
     };
 }
 
-/** Upsert a slip and mark it pending grading. Idempotent per distinct leg set. */
-export async function recordSlip(record: SlipRecord): Promise<void> {
-    const graded = await store.get<GradedSlip>(resultKey(record.slipId));
-    if (graded) return;
-
-    const existing = await store.get<SlipRecord>(slipKey(record.slipId));
-    if (existing) record.createdAt = existing.createdAt; // keep the earliest
-
-    await store.set(slipKey(record.slipId), record, 45 * 24 * 60 * 60);
+/**
+ * Log a slip and mark it pending grading. The first slip logged for a preset on
+ * a given day wins — later calls (a manual cron re-run) are no-ops.
+ */
+export async function recordSlip(record: SlipRecord): Promise<boolean> {
+    const claim = await store.incr(`slip:claim:${record.slipId}`, SLIP_TTL);
+    if (claim !== 1) return false;
+    await store.set(slipKey(record.slipId), record, SLIP_TTL);
     await store.sadd(PENDING_SET, record.slipId);
+    return true;
 }
 
-/** Build every canonical preset slip from the current fixtures and log it. */
+/**
+ * Build every canonical preset slip from today's fixtures and log it. Only
+ * selections priced at live book odds are eligible, so every logged slip settles
+ * at a price that was actually on offer. Returns how many slips were logged.
+ */
 export async function recordPresetSlips(
     matches: MatchWithPrediction[],
     odds: Record<string, FixtureOdds>,
-): Promise<void> {
+    now = new Date(),
+): Promise<number> {
+    const day = now.toISOString().slice(0, 10);
+    const priced = matches.filter((m) => odds[m.match.id] != null);
+    let recorded = 0;
     for (const preset of SLIP_PRESETS) {
         try {
             const req = preset.request;
             const selections = enumerateSelections(
-                matches,
+                priced,
                 odds,
                 req,
-                req.mode === 'single-market' ? { onlyMarket: req.market } : {},
-            );
+                req.mode === 'single-market' ? { onlyMarket: req.market, now } : { now },
+            ).filter((s) => s.bookOdds != null);
             const slip = buildSlip(selections, req);
-            if (slip.legs.length < 2) continue;
+            if (slip.legs.length < 2 || slip.combinedBookOdds == null) continue;
             if (slip.legs.some((l) => !l.autoGradable)) continue; // keep the record corners-free
-            await recordSlip(toRecord(preset.id, req.mode, slip));
+            if (await recordSlip(toRecord(preset.id, req.mode, slip, day))) recorded++;
         } catch (err) {
             log.warn(`recordPresetSlips ${preset.id} failed`, (err as Error).message);
         }
     }
+    return recorded;
 }
 
 export async function pendingSlipIds(): Promise<string[]> {
@@ -122,9 +141,20 @@ export async function getSlip(id: string): Promise<SlipRecord | null> {
     return store.get<SlipRecord>(slipKey(id));
 }
 
+/** Many slip records in one round trip, in order; null where expired. */
+export async function getSlips(ids: string[]): Promise<Array<SlipRecord | null>> {
+    return store.mget<SlipRecord>(ids.map(slipKey));
+}
+
+/** Drop a slip from the grading queue without grading it (record gone, leg void). */
+export async function discardPendingSlip(id: string): Promise<void> {
+    await store.srem(PENDING_SET, id);
+}
+
 // --- grade path ------------------------------------------------------
 
-function legHit(market: string, fh: number, fa: number): boolean {
+/** Whether a leg in `market` landed, given the final score. Unknown markets miss. */
+export function legHit(market: string, fh: number, fa: number): boolean {
     const total = fh + fa;
     const res = fh > fa ? 'home' : fh === fa ? 'draw' : 'away';
     switch (market) {
@@ -153,12 +183,26 @@ function legHit(market: string, fh: number, fa: number): boolean {
     }
 }
 
-/** Grade one slip once every leg's match has finished. Returns null if it isn't gradable. */
+/**
+ * Grade one slip once every leg's match has finished. Returns null if it isn't
+ * gradable, or if another run already graded it.
+ */
 export async function gradeSlip(
     record: SlipRecord,
     finals: Map<string, { home: number; away: number }>,
 ): Promise<GradedSlip | null> {
-    if (record.legs.some((l) => !GRADABLE.has(l.market))) {
+    // Legacy per-view records and anything without a real price never settle
+    // into the record — a fair-odds payout carries no bookmaker margin.
+    if (
+        !record.day ||
+        record.combinedBookOdds == null ||
+        record.legs.some((l) => !GRADABLE.has(l.market))
+    ) {
+        await store.srem(PENDING_SET, record.slipId);
+        return null;
+    }
+    const claim = await store.incr(`slip:graded:${record.slipId}`, RESULT_TTL);
+    if (claim !== 1) {
         await store.srem(PENDING_SET, record.slipId);
         return null;
     }
@@ -176,7 +220,7 @@ export async function gradeSlip(
         };
     });
     const won = legResults.every((r) => r.hit);
-    const payoutMultiple = won ? (record.combinedBookOdds ?? record.combinedFairOdds) : 0;
+    const payoutMultiple = won ? record.combinedBookOdds : 0;
 
     const graded: GradedSlip = {
         slipId: record.slipId,
@@ -188,7 +232,7 @@ export async function gradeSlip(
         payoutMultiple,
     };
 
-    await store.set(resultKey(record.slipId), graded, 120 * 24 * 60 * 60);
+    await store.set(resultKey(record.slipId), graded, RESULT_TTL);
     await store.srem(PENDING_SET, record.slipId);
     await foldIntoRolling(record, graded);
     await pushRecentSlip(record.slipId);
@@ -235,43 +279,54 @@ export async function pushRecentSlip(id: string): Promise<void> {
 export async function recentSlips(
     limit = 12,
 ): Promise<Array<GradedSlip & { record: SlipRecord | null }>> {
-    const ids = (await store.get<string[]>(RECENT_KEY)) ?? [];
+    const ids = ((await store.get<string[]>(RECENT_KEY)) ?? []).slice(0, limit);
+    if (ids.length === 0) return [];
+    const [results, records] = await Promise.all([
+        store.mget<GradedSlip>(ids.map(resultKey)),
+        getSlips(ids),
+    ]);
     const out: Array<GradedSlip & { record: SlipRecord | null }> = [];
-    for (const id of ids.slice(0, limit)) {
-        const res = await store.get<GradedSlip>(resultKey(id));
-        if (!res) continue;
-        const record = await store.get<SlipRecord>(slipKey(id));
-        out.push({ ...res, legResults: await hydrateLegs(res.legResults, record), record });
-    }
-    return out;
+    results.forEach((res, i) => {
+        if (res) out.push({ ...res, record: records[i] });
+    });
+    return hydrateLegs(out);
 }
 
 /**
  * Fill in any leg still missing team names or a final score. New slips store both
  * at grade time; older ones fall back to their SlipRecord and, for the score, to
- * the match's own graded prediction result (`result:{matchId}`).
+ * the match's own graded prediction result (`result:{matchId}`) — fetched for
+ * every slip in one round trip.
  */
-async function hydrateLegs(
-    legs: SlipLegResult[],
-    record: SlipRecord | null,
-): Promise<SlipLegResult[]> {
-    return Promise.all(
-        legs.map(async (leg, i) => {
+async function hydrateLegs<S extends GradedSlip & { record: SlipRecord | null }>(
+    slips: S[],
+): Promise<S[]> {
+    const missing = [
+        ...new Set(
+            slips.flatMap((s) => s.legResults.filter((l) => l.score == null).map((l) => l.matchId)),
+        ),
+    ];
+    const finals = new Map<string, { home: number; away: number }>();
+    if (missing.length > 0) {
+        const graded = await store.mget<{ finalScore?: { home: number; away: number } }>(
+            missing.map((id) => `result:${id}`),
+        );
+        graded.forEach((g, i) => {
+            if (g?.finalScore) finals.set(missing[i], g.finalScore);
+        });
+    }
+    return slips.map((s) => ({
+        ...s,
+        legResults: s.legResults.map((leg, i) => {
             if (leg.home && leg.score) return leg;
-            const recLeg = record?.legs[i];
-            const gr =
-                leg.score == null
-                    ? await store.get<{ finalScore?: { home: number; away: number } }>(
-                          `result:${leg.matchId}`,
-                      )
-                    : null;
+            const recLeg = s.record?.legs[i];
             return {
                 ...leg,
                 home: leg.home ?? recLeg?.home,
                 away: leg.away ?? recLeg?.away,
                 market: leg.market ?? recLeg?.market,
-                score: leg.score ?? gr?.finalScore,
+                score: leg.score ?? finals.get(leg.matchId),
             };
         }),
-    );
+    }));
 }

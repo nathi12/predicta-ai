@@ -117,7 +117,7 @@ function finalize(legs: Selection[], req: SlipRequest, meta: FinalizeMeta): BetS
 
     if (legs.length >= 2) {
         warnings.push(
-            'Model probabilities are uncalibrated and the combined figure assumes the legs are independent — treat it as a guide, not a true win chance.',
+            'Goals and BTTS probabilities aren’t recalibrated against the record yet, and the combined figure assumes the legs are independent — treat it as a guide, not a true win chance.',
         );
     }
 

@@ -3,7 +3,7 @@
 // (points-per-game + goal difference) by the caller, then refined here by
 // replaying this season's finished results with a goal-difference-aware K.
 
-const K0 = 20;
+import { DEFAULT_PARAMS } from './params';
 
 export interface FinishedResult {
     homeId: number;
@@ -53,7 +53,7 @@ function goalMultiplier(goalDiff: number, eloDiffForWinner: number): number {
 export function buildRatings(
     seeds: Map<number, number>,
     results: FinishedResult[],
-    homeAdvantage = 65,
+    { k = DEFAULT_PARAMS.eloK, homeAdvantage = DEFAULT_PARAMS.eloHomeAdvantage } = {},
 ): Map<number, number> {
     const table = new Map(seeds);
     const rate = (id: number) => table.get(id) ?? 1500;
@@ -66,7 +66,7 @@ export function buildRatings(
         const actual = r.homeGoals > r.awayGoals ? 1 : r.homeGoals === r.awayGoals ? 0.5 : 0;
         const winnerEloDiff = actual === 1 ? rh + homeAdvantage - ra : ra - rh - homeAdvantage;
         const mult = goalMultiplier(r.homeGoals - r.awayGoals, winnerEloDiff);
-        const delta = 0.6 * K0 * mult * (actual - e);
+        const delta = 0.6 * k * mult * (actual - e);
         table.set(r.homeId, rh + delta);
         table.set(r.awayId, ra - delta);
     }
@@ -77,7 +77,7 @@ export function buildRatings(
 export function eloOutcome(
     homeElo: number,
     awayElo: number,
-    homeAdvantage = 65,
+    homeAdvantage = DEFAULT_PARAMS.eloHomeAdvantage,
 ): { home: number; draw: number; away: number } {
     const e = expectedScore(homeElo, awayElo, homeAdvantage);
     const evenness = 1 - Math.abs(2 * e - 1);

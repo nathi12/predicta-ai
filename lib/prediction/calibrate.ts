@@ -73,18 +73,16 @@ function curveFromBins(bins: CalBin[]): CalibrationCurve | undefined {
 }
 
 /**
- * Build the 1X2 recalibration curve from the grading log's favourite-probability
- * bins. Returns undefined — i.e. the identity, a no-op in calibrateOutcome —
- * until there's enough graded history to trust, so predictions are never blocked
- * on having a track record.
- *
- * Note the loop is mildly self-referential once live: new predictions are stored
- * already-calibrated, so the bins then measure the *residual* error and the map
- * converges. The per-bin shrinkage keeps that stable.
+ * Build a 1X2 recalibration curve from calibration bins. Returns undefined —
+ * i.e. the identity, a no-op in calibrateOutcome — until `minTotal` points are
+ * graded, so predictions are never blocked on having a track record.
  */
-export function buildCalibrationMap(bins: RollingStats['calibration']): CalibrationMap | undefined {
+export function buildCalibrationMap(
+    bins: RollingStats['calibration'],
+    minTotal = CALIBRATION_MIN_TOTAL,
+): CalibrationMap | undefined {
     const total = bins.reduce((s, b) => s + b.n, 0);
-    if (total < CALIBRATION_MIN_TOTAL) return undefined;
+    if (total < minTotal) return undefined;
     const outcome = curveFromBins(bins);
     return outcome ? { outcome } : undefined;
 }
@@ -109,6 +107,71 @@ export function buildCornerCalibrationMap(
         ...(corners95 ? { corners95 } : {}),
         ...(corners105 ? { corners105 } : {}),
     };
+}
+
+// --- choosing the live curves ---------------------------------------------
+//
+// The curves are applied to *raw* model probabilities, so they must be learned
+// from raw probabilities (RollingStats.rawCalibration) — and from the *live*
+// model version's, since a parameter change shifts the raw distribution the
+// curve corrects. The published-figure bins (calibration / cornersCalibration)
+// measure output that was already calibrated; a curve learned from those and
+// re-applied to raw output settles at roughly half the needed correction.
+// They're kept for the public chart and, all-time, as an interim curve until
+// the live version's raw sample is deep enough.
+//
+// Each chooser takes the all-time aggregate (interim curve) and the live model
+// version's (raw curve) — null when that version has nothing graded yet.
+// Passing one aggregate uses it for both.
+
+/** 1X2 raw bins are one-vs-rest: each graded match adds three points. */
+const OUTCOME_POINTS_PER_MATCH = 3;
+
+export type CalibrationSource = 'raw' | 'interim' | 'none';
+
+export interface CalibrationChoice<T> {
+    curves?: T;
+    source: CalibrationSource;
+    /** Graded predictions (1X2) or lines (corners) in the raw learning sample. */
+    rawGraded: number;
+}
+
+export function outcomeCalibrationFromStats(
+    allTime: RollingStats,
+    current: RollingStats | null = allTime,
+): CalibrationChoice<Pick<CalibrationMap, 'outcome'>> {
+    const rawBins = current?.rawCalibration?.outcome ?? [];
+    const rawGraded = Math.floor(rawBins.reduce((s, b) => s + b.n, 0) / OUTCOME_POINTS_PER_MATCH);
+    const raw = buildCalibrationMap(rawBins, CALIBRATION_MIN_TOTAL * OUTCOME_POINTS_PER_MATCH);
+    if (raw) return { curves: raw, source: 'raw', rawGraded };
+    const interim = buildCalibrationMap(allTime.calibration);
+    return interim ? { curves: interim, source: 'interim', rawGraded } : { source: 'none', rawGraded };
+}
+
+export function cornersCalibrationFromStats(
+    allTime: RollingStats,
+    current: RollingStats | null = allTime,
+): CalibrationChoice<Pick<CalibrationMap, 'corners95' | 'corners105'>> {
+    const raw95 = current?.rawCalibration?.over95 ?? [];
+    const raw105 = current?.rawCalibration?.over105 ?? [];
+    const rawGraded = [...raw95, ...raw105].reduce((s, b) => s + b.n, 0);
+    const raw = buildCornerCalibrationMap(raw95, raw105);
+    if (raw) return { curves: raw, source: 'raw', rawGraded };
+    const interim = buildCornerCalibrationMap(
+        allTime.cornersCalibration?.over95 ?? [],
+        allTime.cornersCalibration?.over105 ?? [],
+    );
+    return interim ? { curves: interim, source: 'interim', rawGraded } : { source: 'none', rawGraded };
+}
+
+/** Every live recalibration curve for the next build, or undefined (identity). */
+export function calibrationFromStats(
+    allTime: RollingStats,
+    current: RollingStats | null = allTime,
+): CalibrationMap | undefined {
+    const outcome = outcomeCalibrationFromStats(allTime, current).curves;
+    const corners = cornersCalibrationFromStats(allTime, current).curves;
+    return outcome || corners ? { ...outcome, ...corners } : undefined;
 }
 
 /** Map a probability through a piecewise-linear curve. No curve => identity. */

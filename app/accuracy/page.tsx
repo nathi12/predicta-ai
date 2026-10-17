@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { getRollingStats, recentResults } from '@/lib/tracking';
+import { getRollingStats, recentResults, type StatsView } from '@/lib/tracking';
 import { getSlipStats, recentSlips } from '@/lib/slipTracking';
 import { AccuracyDashboard } from '@/components/AccuracyDashboard';
 
@@ -10,13 +10,23 @@ export const metadata: Metadata = {
 
 export const dynamic = 'force-dynamic';
 
-export default async function AccuracyPage() {
-    const [stats, recent, slipStats, slipsRecent] = await Promise.all([
-        getRollingStats(),
+const parseView = (v: string | undefined): StatsView => (v === '90d' || v === 'model' ? v : 'all');
+
+export default async function AccuracyPage({
+    searchParams,
+}: {
+    searchParams: Promise<{ view?: string }>;
+}) {
+    const view = parseView((await searchParams).view);
+    const [allTime, current, windowed, recent, slipStats, slipsRecent] = await Promise.all([
+        getRollingStats('all'),
+        getRollingStats('model'),
+        view === '90d' ? getRollingStats('90d') : Promise.resolve(null),
         recentResults(20),
         getSlipStats(),
         recentSlips(12),
     ]);
+    const stats = view === 'all' ? allTime : view === 'model' ? current : windowed;
 
     return (
         <div className="space-y-6">
@@ -29,7 +39,10 @@ export default async function AccuracyPage() {
             </header>
 
             <AccuracyDashboard
+                view={view}
                 stats={stats}
+                allTime={allTime}
+                current={current}
                 recent={recent}
                 slipStats={slipStats}
                 slipsRecent={slipsRecent}
