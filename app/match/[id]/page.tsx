@@ -11,15 +11,13 @@ import { HeadToHead } from '@/components/match/HeadToHead';
 import { Section } from '@/components/match/Section';
 import { Disclaimer } from '@/components/Disclaimer';
 
-// Same cadence as the fixtures list it is read from.
-export const revalidate = 900;
+// Rendered per request from the KV-cached slate. It can't be ISR: Upstash reads
+// are `no-store` fetches, and a no-store fetch inside a page Next treats as
+// static fails at runtime (DYNAMIC_SERVER_USAGE → 500). `/` and `/slip` end up
+// dynamic in production for the same reason.
+export const dynamic = 'force-dynamic';
 // Headroom for the detached cache rebuild kicked off by getUpcomingMatches().
 export const maxDuration = 60;
-
-/** Nothing prerendered at build time: each match page renders on first visit, then ISR. */
-export async function generateStaticParams() {
-    return [];
-}
 
 type Props = { params: Promise<{ id: string }> };
 

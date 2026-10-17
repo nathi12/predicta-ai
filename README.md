@@ -145,7 +145,7 @@ head-to-head and API-Football enrichment, which have no history.
 ## Project layout
 
 ```
-app/            routes: / (ISR), /match/[id] (on-demand ISR), /slip, /accuracy, /method, /api/cron/grade
+app/            routes: / (ISR), /match/[id] (dynamic), /slip, /accuracy, /method, /api/cron/grade
 components/     UI (server + client); MatchExplorer does client-side filter/sort only;
   match/        sections of the match analysis page
 lib/
