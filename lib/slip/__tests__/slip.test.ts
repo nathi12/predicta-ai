@@ -223,6 +223,83 @@ test('target-odds: a smaller target produces a shorter, higher-probability slip'
     assert.ok(small.combinedModelProbability >= big.combinedModelProbability);
 });
 
+test('target-odds: builds from strong legs, not a short double that just fits', () => {
+    // Four fixtures with a strong Over 1.5, two with a 66% home favourite. A pair
+    // of ~70% legs would land closest to 2.00; the strongest-legs search instead
+    // raises every leg to 80%+.
+    const even = { home: 0.4, draw: 0.3, away: 0.3 };
+    const fav = { home: 0.66, draw: 0.2, away: 0.14 };
+    const matches = [
+        makeMatch({ id: 'PL-1', outcome: even, over15: 0.88, daysAhead: 1 }),
+        makeMatch({ id: 'PL-2', outcome: even, over15: 0.86, daysAhead: 2 }),
+        makeMatch({ id: 'PL-3', outcome: even, over15: 0.85, daysAhead: 3 }),
+        makeMatch({ id: 'PL-4', outcome: even, over15: 0.84, daysAhead: 4 }),
+        makeMatch({ id: 'PL-5', outcome: fav, over15: 0.6, daysAhead: 5 }),
+        makeMatch({ id: 'PL-6', outcome: fav, over15: 0.6, daysAhead: 6 }),
+    ];
+    const r = targetReq({ targetOdds: 2.0, maxLegs: 4 });
+    const slip = buildSlip(enumerateSelections(matches, {}, r), r);
+
+    assert.ok(slip.combinedEffectiveOdds >= 2.0);
+    assert.ok(slip.legs.length >= 2 && slip.legs.length <= 4);
+    assert.ok(distinctMatches(slip.legs.map((l) => l.matchId)));
+    assert.ok(slip.legs.every((l) => l.modelProbability >= 0.8), 'every leg is 80%+');
+    assert.equal(slip.legs.some((l) => l.market === 'home'), false);
+    assert.ok(slip.rationale[0].startsWith('Strongest legs that reach 2.00'));
+    assert.equal(slip.warnings.some((w) => w.includes("Couldn't reach")), false);
+});
+
+test('target-odds: a second-best Over 1.5 is still eligible', () => {
+    // Per fixture: 1X 92% > Over 1.5 85% > 12 78% > home 70% > … — Over 1.5 is
+    // the second option, which the old safest/middle/reach pruning dropped.
+    const matches = [1, 2, 3, 4].map((n) =>
+        makeMatch({
+            id: `PL-${n}`,
+            outcome: { home: 0.7, draw: 0.22, away: 0.08 },
+            over15: 0.85,
+            daysAhead: n,
+        }),
+    );
+    const r = targetReq({ targetOdds: 1.8, maxLegs: 4 });
+    const slip = buildSlip(enumerateSelections(matches, {}, r), r);
+
+    assert.equal(slip.legs.length, 4);
+    assert.ok(slip.legs.every((l) => l.market === 'over15'));
+    assert.ok(slip.combinedEffectiveOdds >= 1.8);
+});
+
+test('target-odds: combined odds above the target are accepted', () => {
+    // Only Over 1.5 is 80%+; three legs fall short of 2.00, so it takes four
+    // (≈2.44) rather than drop to weaker picks that land nearer 2.00.
+    const matches = [1, 2, 3, 4].map((n) =>
+        makeMatch({
+            id: `PL-${n}`,
+            outcome: { home: 0.4, draw: 0.25, away: 0.35 },
+            over15: 0.8,
+            daysAhead: n,
+        }),
+    );
+    const r = targetReq({ targetOdds: 2.0, maxLegs: 4 });
+    const slip = buildSlip(enumerateSelections(matches, {}, r), r);
+
+    assert.equal(slip.legs.length, 4);
+    assert.ok(slip.legs.every((l) => l.market === 'over15'));
+    assert.ok(Math.abs(slip.combinedEffectiveOdds - 1 / 0.8 ** 4) < 1e-9);
+    assert.equal(slip.warnings.some((w) => w.includes("Couldn't reach")), false);
+});
+
+test('target-odds: value preset keeps the any-leg search', () => {
+    const even = { home: 0.4, draw: 0.3, away: 0.3 };
+    const matches = [1, 2, 3, 4].map((n) =>
+        makeMatch({ id: `PL-${n}`, outcome: even, over15: 0.8 + n / 100, daysAhead: n }),
+    );
+    const r = targetReq({ targetOdds: 2.0, maxLegs: 4, risk: 'value' });
+    const slip = buildSlip(enumerateSelections(matches, {}, r), r);
+
+    assert.ok(slip.combinedEffectiveOdds >= 2.0);
+    assert.equal(slip.rationale.some((x) => x.startsWith('Strongest legs')), false);
+});
+
 test('target-odds: unreachable target returns closest combo with a warning', () => {
     const matches = [
         makeMatch({ id: 'PL-1', outcome: { home: 0.9, draw: 0.06, away: 0.04 }, daysAhead: 1 }),

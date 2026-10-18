@@ -86,9 +86,12 @@ export default function MethodPage() {
                     turns these probabilities into an accumulator. Every fixture is expanded into
                     candidate legs across match result, double chance, over/under and both-teams-to-score;
                     each leg is priced at its fair odds (1 ÷ model probability) and, where a live feed has
-                    them, at real bookmaker odds. In <em>target-odds</em> mode the curator searches
-                    one-leg-per-match combinations and returns the one that clears your target with the
-                    highest combined model probability — the safest slip that fits. In{' '}
+                    them, at real bookmaker odds. In <em>target-odds</em> mode the curator first finds
+                    the highest per-leg probability at which a one-leg-per-match slip can still clear
+                    your target within the leg cap, then returns the combination above that floor with
+                    the highest combined model probability — every leg as strong as it can be, with the
+                    combined odds at or a little above the target. (The <em>value</em> preset skips the
+                    floor and takes the highest combined probability over any legs.) In{' '}
                     <em>single-market</em> mode it just takes the strongest N selections in your chosen
                     market. Combined probability is the product of the legs, which assumes they’re
                     independent; real fixtures are only roughly so, and only the match-outcome and corners
